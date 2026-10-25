@@ -41,6 +41,7 @@ const schema = `
 CREATE TABLE IF NOT EXISTS links (
 	id       INTEGER PRIMARY KEY AUTOINCREMENT,
 	url      TEXT NOT NULL,
+	url_key  TEXT NOT NULL DEFAULT '', -- URLKey(url), to find duplicates
 	added_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS link_tags (
@@ -150,7 +151,52 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+
+	// Duplicate detection compares links by URLKey, which existing links lack.
+	if ok, err := hasColumn(tx, "links", "url_key"); err != nil {
+		return err
+	} else if !ok {
+		if _, err := tx.Exec(`ALTER TABLE links ADD COLUMN url_key TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if err := backfillURLKeys(tx); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS links_url_key ON links(url_key)`); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+// backfillURLKeys sets url_key on links that have none.
+func backfillURLKeys(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT id, url FROM links WHERE url_key = ''`)
+	if err != nil {
+		return err
+	}
+	keys := map[int64]string{}
+	for rows.Next() {
+		var (
+			id  int64
+			url string
+		)
+		if err := rows.Scan(&id, &url); err != nil {
+			rows.Close()
+			return err
+		}
+		keys[id] = URLKey(url)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for id, key := range keys {
+		if _, err := tx.Exec(`UPDATE links SET url_key = ? WHERE id = ?`, key, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func hasColumn(tx *sql.Tx, table, column string) (bool, error) {
@@ -172,7 +218,7 @@ func (s *Store) Add(url string, tags []string) (Link, error) {
 	}
 	defer tx.Rollback()
 
-	res, err := tx.Exec(`INSERT INTO links (url, added_at) VALUES (?, ?)`, l.URL, l.AddedAt.Unix())
+	res, err := tx.Exec(`INSERT INTO links (url, url_key, added_at) VALUES (?, ?, ?)`, l.URL, URLKey(l.URL), l.AddedAt.Unix())
 	if err != nil {
 		return Link{}, err
 	}
@@ -220,7 +266,12 @@ func (s *Store) Update(id int64, p Patch) (Link, error) {
 	}
 	defer tx.Rollback()
 
-	res, err := tx.Exec(`UPDATE links SET url = COALESCE(?, url) WHERE id = ?`, p.URL, id)
+	var key *string
+	if p.URL != nil {
+		k := URLKey(*p.URL)
+		key = &k
+	}
+	res, err := tx.Exec(`UPDATE links SET url = COALESCE(?, url), url_key = COALESCE(?, url_key) WHERE id = ?`, p.URL, key, id)
 	if err != nil {
 		return Link{}, err
 	}
@@ -269,6 +320,12 @@ func (s *Store) Get(id int64) (Link, error) {
 		return Link{}, ErrNotFound
 	}
 	return links[0], nil
+}
+
+// FindURL returns the links whose URL points to the same page as rawURL
+// (see URLKey), oldest first.
+func (s *Store) FindURL(rawURL string) ([]Link, error) {
+	return s.query(`WHERE l.url_key = ?`, byID, URLKey(rawURL))
 }
 
 // ErrNoContent is returned when a link has no fetched content yet.

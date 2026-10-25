@@ -17,8 +17,9 @@ import (
 const usage = `liki - local wiki for links
 
 Usage:
-  liki add <url> [-tags a,b] [-no-fetch]
-                                             save a link and download its content
+  liki add <url> [-tags a,b] [-no-fetch] [-force]
+                                             save a link and download its content;
+                                             -force saves a link already saved
   liki list [page] [-n 20] [-tags a,b]       show saved links, newest first, a page
                                              at a time; -tags keeps links with any
                                              of the given tags
@@ -51,7 +52,7 @@ type Command struct {
 
 var Commands = []Command{
 	{"search", "<words...> [-n 10]", "find links by meaning and keywords"},
-	{"add", "<url> [-tags a,b] [-no-fetch]", "save a link and download its content"},
+	{"add", "<url> [-tags a,b] [-no-fetch] [-force]", "save a link and download its content"},
 	{"list", "[page] [-n 20] [-tags a,b]", "show saved links, newest first, a page at a time"},
 	{"show", "<id> [-html]", "read saved article text"},
 	{"open", "<id> [-o file.html]", "open the saved page, with original styles, in the browser"},
@@ -123,6 +124,7 @@ func runAdd(ctx context.Context, args []string, out io.Writer) error {
 	fs := newFlagSet("add", out)
 	tags := fs.String("tags", "", "comma-separated tags")
 	noFetch := fs.Bool("no-fetch", false, "save only the link, without downloading its content")
+	force := fs.Bool("force", false, "save the link even if it is already saved")
 
 	raw, err := parseWithArg(fs, args)
 	if err != nil {
@@ -141,6 +143,17 @@ func runAdd(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer s.Close()
+	if !*force {
+		dups, err := s.FindURL(u)
+		if err != nil {
+			return err
+		}
+		if len(dups) > 0 {
+			d := dups[0]
+			return fmt.Errorf("add: already saved as #%d %s (use -force to save it again, or '%s' to change its tags)",
+				d.ID, d.URL, commandHint(out, fmt.Sprintf("edit %d -tags ...", d.ID)))
+		}
+	}
 	l, err := s.Add(u, splitTags(*tags))
 	if err != nil {
 		return err
@@ -256,6 +269,17 @@ func runEdit(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer s.Close()
+	if p.URL != nil {
+		dups, err := s.FindURL(*p.URL)
+		if err != nil {
+			return err
+		}
+		for _, d := range dups {
+			if d.ID != id {
+				return fmt.Errorf("edit #%d: #%d already has this url: %s", id, d.ID, d.URL)
+			}
+		}
+	}
 	l, err := s.Update(id, p)
 	if err != nil {
 		return fmt.Errorf("edit #%d: %w", id, err)

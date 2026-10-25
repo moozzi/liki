@@ -60,7 +60,7 @@ $ liki
 
 | Command | What it does |
 |---|---|
-| `add <url> [-tags a,b] [-no-fetch]` | Save a link. Downloads the article text and an offline snapshot right away unless `-no-fetch` is given. |
+| `add <url> [-tags a,b] [-no-fetch] [-force]` | Save a link. Downloads the article text and an offline snapshot right away unless `-no-fetch` is given. Refuses a link that is already saved, even in another form (`http`/`https`, `www.`, trailing `/`, `#anchor`, `utm_*` and other tracking parameters); `-force` saves it anyway. |
 | `search <words...> [-n 10]` | Find links by meaning and keywords in their tags, URL and article text. In interactive mode, just type the words. |
 | `list [page] [-n 20] [-tags a,b]` | Show saved links, newest first, one page at a time. `-tags` keeps links with any of the tags. |
 | `show <id> [-html]` | Print the saved article text (or its cleaned-up HTML). |
