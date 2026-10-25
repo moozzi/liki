@@ -16,13 +16,20 @@ import (
 const usage = `liki - local wiki for links
 
 Usage:
-  liki add <url> [-title "..."] [-tags a,b]   save a link
+  liki add <url> [-title "..."] [-tags a,b] [-no-fetch]
+                                             save a link and download its content
   liki list [-tags a,b]                      show saved links; -tags keeps links
                                              with any of the given tags
   liki edit <id> [-url ...] [-title ...] [-tags a,b]
                                              change a link (only given fields;
                                              -tags replaces all tags)
   liki rm <id> [<id>...]                     remove links by id
+  liki fetch [-all] [<id>...]                download article content and page
+                                             snapshot; with no ids fetches links
+                                             missing them (-all: re-fetch everything)
+  liki show <id> [-html]                     read saved article text
+  liki open <id> [-o file.html]              open the saved page, with its original
+                                             styles, in the browser (offline)
   liki help                                  show this help
 
 Database: ~/.liki/liki.db (override with LIKI_DB)
@@ -42,6 +49,12 @@ func Run(args []string, out io.Writer) error {
 		return runEdit(args[1:], out)
 	case "rm", "remove", "delete":
 		return runRemove(args[1:], out)
+	case "fetch":
+		return runFetch(args[1:], out)
+	case "show", "read":
+		return runShow(args[1:], out)
+	case "open":
+		return runOpen(args[1:], out)
 	case "help", "-h", "--help":
 		fmt.Fprint(out, usage)
 		return nil
@@ -62,6 +75,7 @@ func runAdd(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	title := fs.String("title", "", "link title")
 	tags := fs.String("tags", "", "comma-separated tags")
+	noFetch := fs.Bool("no-fetch", false, "save only the link, without downloading its content")
 
 	raw, err := parseWithArg(fs, args)
 	if err != nil {
@@ -85,6 +99,13 @@ func runAdd(args []string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "added #%d %s\n", l.ID, l.URL)
+	if *noFetch {
+		return nil
+	}
+	// The link is already saved, so a failed download is only a warning.
+	if err := fetchOne(s, l, out); err != nil {
+		fmt.Fprintf(out, "warning: could not fetch content: %v (retry with 'liki fetch %d')\n", err, l.ID)
+	}
 	return nil
 }
 

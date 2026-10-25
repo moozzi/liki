@@ -2,9 +2,12 @@
 package store
 
 import (
+	"bytes"
+	"compress/gzip"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,11 +17,20 @@ import (
 )
 
 type Link struct {
-	ID      int64
-	URL     string
-	Title   string
-	Tags    []string
-	AddedAt time.Time
+	ID          int64
+	URL         string
+	Title       string
+	Tags        []string
+	AddedAt     time.Time
+	FetchedAt   time.Time // zero if content was never fetched
+	HasSnapshot bool      // whether a full-page snapshot is saved
+}
+
+// Content is the downloaded, readable version of a linked article.
+type Content struct {
+	Text      string
+	HTML      string
+	FetchedAt time.Time
 }
 
 type Store struct {
@@ -38,6 +50,16 @@ CREATE TABLE IF NOT EXISTS link_tags (
 	PRIMARY KEY (link_id, tag)
 );
 CREATE INDEX IF NOT EXISTS link_tags_tag ON link_tags(tag);
+CREATE TABLE IF NOT EXISTS contents (
+	link_id    INTEGER PRIMARY KEY REFERENCES links(id) ON DELETE CASCADE,
+	text       TEXT NOT NULL,
+	html       TEXT NOT NULL,
+	fetched_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS snapshots (
+	link_id INTEGER PRIMARY KEY REFERENCES links(id) ON DELETE CASCADE,
+	html_gz BLOB NOT NULL
+);
 `
 
 // DefaultPath returns $LIKI_DB or ~/.liki/liki.db.
@@ -143,6 +165,14 @@ func (s *Store) Update(id int64, p Patch) (Link, error) {
 	if n == 0 {
 		return Link{}, ErrNotFound
 	}
+	// Content saved for the old URL no longer matches the link.
+	if p.URL != nil {
+		for _, q := range []string{`DELETE FROM contents WHERE link_id = ?`, `DELETE FROM snapshots WHERE link_id = ?`} {
+			if _, err := tx.Exec(q, id); err != nil {
+				return Link{}, err
+			}
+		}
+	}
 	if p.Tags != nil {
 		if _, err := tx.Exec(`DELETE FROM link_tags WHERE link_id = ?`, id); err != nil {
 			return Link{}, err
@@ -171,6 +201,84 @@ func (s *Store) Get(id int64) (Link, error) {
 	return links[0], nil
 }
 
+// ErrNoContent is returned when a link has no fetched content yet.
+var ErrNoContent = errors.New("content not fetched yet")
+
+// SaveContent stores the article content and page snapshot for a link,
+// replacing any previous version. title is used only if the link has no title yet.
+func (s *Store) SaveContent(id int64, title, text, html string, snapshot []byte) error {
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	if _, err := zw.Write(snapshot); err != nil {
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		return err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`UPDATE links SET title = CASE WHEN title = '' THEN ? ELSE title END WHERE id = ?`, title, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO contents (link_id, text, html, fetched_at) VALUES (?, ?, ?, ?)`,
+		id, text, html, time.Now().Unix()); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO snapshots (link_id, html_gz) VALUES (?, ?)`, id, gz.Bytes()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// GetSnapshot returns the saved full-page snapshot of the link with the given id.
+func (s *Store) GetSnapshot(id int64) ([]byte, error) {
+	var gz []byte
+	err := s.db.QueryRow(`SELECT html_gz FROM snapshots WHERE link_id = ?`, id).Scan(&gz)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNoContent
+	}
+	if err != nil {
+		return nil, err
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	return io.ReadAll(zr)
+}
+
+// GetContent returns the fetched content of the link with the given id.
+func (s *Store) GetContent(id int64) (Content, error) {
+	var (
+		c       Content
+		fetched int64
+	)
+	err := s.db.QueryRow(`SELECT text, html, fetched_at FROM contents WHERE link_id = ?`, id).
+		Scan(&c.Text, &c.HTML, &fetched)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Content{}, ErrNoContent
+	}
+	if err != nil {
+		return Content{}, err
+	}
+	c.FetchedAt = time.Unix(fetched, 0)
+	return c, nil
+}
+
 // List returns all links ordered by id, with their tags.
 func (s *Store) List() ([]Link, error) {
 	return s.query("")
@@ -193,9 +301,12 @@ func (s *Store) FindByTags(tags []string) ([]Link, error) {
 // query selects links with their tags; where is an optional WHERE clause on alias l.
 func (s *Store) query(where string, args ...any) ([]Link, error) {
 	rows, err := s.db.Query(`
-		SELECT l.id, l.url, l.title, l.added_at, COALESCE(GROUP_CONCAT(t.tag, char(31)), '')
+		SELECT l.id, l.url, l.title, l.added_at, COALESCE(c.fetched_at, 0),
+			EXISTS (SELECT 1 FROM snapshots s WHERE s.link_id = l.id),
+			COALESCE(GROUP_CONCAT(t.tag, char(31)), '')
 		FROM links l
 		LEFT JOIN link_tags t ON t.link_id = l.id
+		LEFT JOIN contents c ON c.link_id = l.id
 		`+where+`
 		GROUP BY l.id
 		ORDER BY l.id`, args...)
@@ -207,14 +318,17 @@ func (s *Store) query(where string, args ...any) ([]Link, error) {
 	var links []Link
 	for rows.Next() {
 		var (
-			l     Link
-			added int64
-			tags  string
+			l              Link
+			added, fetched int64
+			tags           string
 		)
-		if err := rows.Scan(&l.ID, &l.URL, &l.Title, &added, &tags); err != nil {
+		if err := rows.Scan(&l.ID, &l.URL, &l.Title, &added, &fetched, &l.HasSnapshot, &tags); err != nil {
 			return nil, err
 		}
 		l.AddedAt = time.Unix(added, 0)
+		if fetched != 0 {
+			l.FetchedAt = time.Unix(fetched, 0)
+		}
 		if tags != "" {
 			l.Tags = strings.Split(tags, "\x1f")
 		}
