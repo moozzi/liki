@@ -1,9 +1,4 @@
-```
-█  ▀ █▄▀ ▀
-█▄ █ █ █ █
-```
-
-# liki
+<img src="logo.svg" alt="liki logo" width="160">
 
 **Your local link wiki.** liki saves links to articles you want to remember, downloads their content and a full offline copy of each page, and lets you find them later by meaning, not just by exact title, tag or URL. Type `enum postgres` and you get every saved article about Postgres enums.
 
