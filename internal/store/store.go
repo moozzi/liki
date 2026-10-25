@@ -116,14 +116,75 @@ func (s *Store) Delete(id int64) error {
 	return nil
 }
 
+// Patch describes changes to a link; nil fields are left unchanged.
+type Patch struct {
+	URL   *string
+	Title *string
+	Tags  *[]string // replaces all tags
+}
+
+// Update applies p to the link with the given id and returns the updated link.
+func (s *Store) Update(id int64, p Patch) (Link, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Link{}, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`UPDATE links SET url = COALESCE(?, url), title = COALESCE(?, title) WHERE id = ?`,
+		p.URL, p.Title, id)
+	if err != nil {
+		return Link{}, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Link{}, err
+	}
+	if n == 0 {
+		return Link{}, ErrNotFound
+	}
+	if p.Tags != nil {
+		if _, err := tx.Exec(`DELETE FROM link_tags WHERE link_id = ?`, id); err != nil {
+			return Link{}, err
+		}
+		for _, t := range *p.Tags {
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO link_tags (link_id, tag) VALUES (?, ?)`, id, t); err != nil {
+				return Link{}, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Link{}, err
+	}
+	return s.Get(id)
+}
+
+// Get returns the link with the given id.
+func (s *Store) Get(id int64) (Link, error) {
+	links, err := s.query(`WHERE l.id = ?`, id)
+	if err != nil {
+		return Link{}, err
+	}
+	if len(links) == 0 {
+		return Link{}, ErrNotFound
+	}
+	return links[0], nil
+}
+
 // List returns all links ordered by id, with their tags.
 func (s *Store) List() ([]Link, error) {
+	return s.query("")
+}
+
+// query selects links with their tags; where is an optional WHERE clause on alias l.
+func (s *Store) query(where string, args ...any) ([]Link, error) {
 	rows, err := s.db.Query(`
 		SELECT l.id, l.url, l.title, l.added_at, COALESCE(GROUP_CONCAT(t.tag, char(31)), '')
 		FROM links l
 		LEFT JOIN link_tags t ON t.link_id = l.id
+		`+where+`
 		GROUP BY l.id
-		ORDER BY l.id`)
+		ORDER BY l.id`, args...)
 	if err != nil {
 		return nil, err
 	}
