@@ -370,7 +370,7 @@ func runRemove(ctx context.Context, args []string, out io.Writer) error {
 
 func splitTags(s string) []string {
 	var tags []string
-	for _, t := range strings.Split(s, ",") {
+	for t := range strings.SplitSeq(s, ",") {
 		if t = strings.TrimSpace(t); t != "" {
 			tags = append(tags, t)
 		}

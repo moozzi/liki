@@ -106,7 +106,7 @@ func strip(n *html.Node) bool {
 			return true
 		}
 	case atom.Link:
-		for _, rel := range strings.Fields(strings.ToLower(getAttr(n, "rel"))) {
+		for rel := range strings.FieldsSeq(strings.ToLower(getAttr(n, "rel"))) {
 			switch rel {
 			case "preload", "modulepreload", "prefetch", "dns-prefetch", "preconnect", "manifest":
 				return true

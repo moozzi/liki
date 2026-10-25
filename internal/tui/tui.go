@@ -376,7 +376,7 @@ func (m *model) outLine(s string) string {
 // block prints text as command output.
 func (m *model) block(text string) tea.Cmd {
 	var cmds []tea.Cmd
-	for _, l := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+	for l := range strings.SplitSeq(strings.TrimRight(text, "\n"), "\n") {
 		cmds = append(cmds, m.println(m.outLine(l)))
 	}
 	return tea.Sequence(cmds...)
@@ -578,7 +578,7 @@ func (m *model) loadHistory() {
 	if err != nil {
 		return
 	}
-	for _, l := range strings.Split(string(data), "\n") {
+	for l := range strings.SplitSeq(string(data), "\n") {
 		if l != "" {
 			m.history = append(m.history, l)
 		}

@@ -58,7 +58,7 @@ func Chunks(l store.Link, text string) []string {
 		}
 		cur.Reset()
 	}
-	for _, para := range strings.Split(text, "\n") {
+	for para := range strings.SplitSeq(text, "\n") {
 		para = strings.TrimSpace(para)
 		if para == "" {
 			continue
@@ -225,7 +225,7 @@ func vectorRanking(ctx context.Context, s *store.Store, c *embed.Client, query s
 // queryWords splits a query into distinct lowercase words.
 func queryWords(query string) []string {
 	var words []string
-	for _, w := range strings.FieldsFunc(query, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+	for w := range strings.FieldsFuncSeq(query, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
 		if w = strings.ToLower(w); !slices.Contains(words, w) {
 			words = append(words, w)
 		}
