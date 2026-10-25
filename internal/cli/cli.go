@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -41,36 +42,73 @@ Search uses a local Ollama server (OLLAMA_HOST, default localhost:11434)
 with the embedding model from LIKI_EMBED_MODEL (default bge-m3).
 `
 
-func Run(args []string, out io.Writer) error {
+// Command describes a subcommand, for help and completion in interactive mode.
+type Command struct {
+	Name    string
+	Args    string // argument synopsis
+	Summary string
+}
+
+var Commands = []Command{
+	{"search", "<words...> [-n 10]", "find links by meaning and keywords"},
+	{"add", "<url> [-title ...] [-tags a,b] [-no-fetch]", "save a link and download its content"},
+	{"list", "[-tags a,b]", "show saved links, optionally only with any of the tags"},
+	{"show", "<id> [-html]", "read saved article text"},
+	{"open", "<id> [-o file.html]", "open the saved page, with original styles, in the browser"},
+	{"edit", "<id> [-url ...] [-title ...] [-tags a,b]", "change a link (-tags replaces all tags)"},
+	{"rm", "<id> [<id>...]", "remove links"},
+	{"fetch", "[-all] [<id>...]", "download content of links missing it"},
+	{"index", "[-all]", "build the search index for links missing it"},
+}
+
+// Run executes the subcommand in args[0], writing its output to out.
+// Long-running commands stop when ctx is cancelled.
+func Run(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		fmt.Fprint(out, usage)
 		return nil
 	}
+	err := dispatch(ctx, args, out)
+	// "-h" already printed the flag usage.
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	return err
+}
+
+func dispatch(ctx context.Context, args []string, out io.Writer) error {
 	switch args[0] {
 	case "add":
-		return runAdd(args[1:], out)
+		return runAdd(ctx, args[1:], out)
 	case "list", "ls":
-		return runList(args[1:], out)
+		return runList(ctx, args[1:], out)
 	case "edit":
-		return runEdit(args[1:], out)
+		return runEdit(ctx, args[1:], out)
 	case "rm", "remove", "delete":
-		return runRemove(args[1:], out)
+		return runRemove(ctx, args[1:], out)
 	case "fetch":
-		return runFetch(args[1:], out)
+		return runFetch(ctx, args[1:], out)
 	case "show", "read":
-		return runShow(args[1:], out)
+		return runShow(ctx, args[1:], out)
 	case "open":
-		return runOpen(args[1:], out)
+		return runOpen(ctx, args[1:], out)
 	case "search", "find", "s":
-		return runSearch(args[1:], out)
+		return runSearch(ctx, args[1:], out)
 	case "index":
-		return runIndex(args[1:], out)
+		return runIndex(ctx, args[1:], out)
 	case "help", "-h", "--help":
 		fmt.Fprint(out, usage)
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q (see 'liki help')", args[0])
 	}
+}
+
+// newFlagSet returns a flag set that reports problems to out instead of stderr.
+func newFlagSet(name string, out io.Writer) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(out)
+	return fs
 }
 
 func openStore() (*store.Store, error) {
@@ -81,8 +119,8 @@ func openStore() (*store.Store, error) {
 	return store.Open(path)
 }
 
-func runAdd(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("add", flag.ContinueOnError)
+func runAdd(ctx context.Context, args []string, out io.Writer) error {
+	fs := newFlagSet("add", out)
 	title := fs.String("title", "", "link title")
 	tags := fs.String("tags", "", "comma-separated tags")
 	noFetch := fs.Bool("no-fetch", false, "save only the link, without downloading its content")
@@ -111,16 +149,16 @@ func runAdd(args []string, out io.Writer) error {
 	fmt.Fprintf(out, "added #%d %s\n", l.ID, l.URL)
 	if !*noFetch {
 		// The link is already saved, so a failed download is only a warning.
-		if err := fetchOne(s, l, out); err != nil {
+		if err := fetchOne(ctx, s, l, out); err != nil {
 			fmt.Fprintf(out, "warning: could not fetch content: %v (retry with 'liki fetch %d')\n", err, l.ID)
 		}
 	}
-	indexAfterChange(s, out)
+	indexAfterChange(ctx, s, out)
 	return nil
 }
 
-func runList(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+func runList(ctx context.Context, args []string, out io.Writer) error {
+	fs := newFlagSet("list", out)
 	tags := fs.String("tags", "", "comma-separated tags; shows links with any of them")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -153,8 +191,8 @@ func runList(args []string, out io.Writer) error {
 	return nil
 }
 
-func runEdit(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("edit", flag.ContinueOnError)
+func runEdit(ctx context.Context, args []string, out io.Writer) error {
+	fs := newFlagSet("edit", out)
 	newURL := fs.String("url", "", "new url")
 	title := fs.String("title", "", "new title (empty clears it)")
 	tags := fs.String("tags", "", "new comma-separated tags, replacing old ones (empty clears them)")
@@ -206,7 +244,7 @@ func runEdit(args []string, out io.Writer) error {
 	}
 	fmt.Fprintln(out, "updated:")
 	printLink(out, l)
-	indexAfterChange(s, out)
+	indexAfterChange(ctx, s, out)
 	return nil
 }
 
@@ -253,7 +291,7 @@ func parseID(s string) (int64, error) {
 	return id, nil
 }
 
-func runRemove(args []string, out io.Writer) error {
+func runRemove(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("rm: missing id")
 	}

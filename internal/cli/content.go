@@ -3,12 +3,10 @@ package cli
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -21,8 +19,8 @@ import (
 // fetchWorkers is how many pages are downloaded at once.
 const fetchWorkers = 4
 
-func runFetch(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("fetch", flag.ContinueOnError)
+func runFetch(ctx context.Context, args []string, out io.Writer) error {
+	fs := newFlagSet("fetch", out)
 	all := fs.Bool("all", false, "re-fetch every link, including already fetched ones")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -62,9 +60,6 @@ func runFetch(args []string, out io.Writer) error {
 		fmt.Fprintln(out, "nothing to fetch - all links have content (use -all to re-fetch)")
 		return nil
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 
 	type result struct {
 		link store.Link
@@ -113,7 +108,7 @@ func runFetch(args []string, out io.Writer) error {
 	if ctx.Err() != nil {
 		return errors.New("fetch: interrupted")
 	}
-	indexAfterChange(s, out)
+	indexAfterChange(ctx, s, out)
 	if failed > 0 {
 		return fmt.Errorf("fetch: %d of %d links failed", failed, len(links))
 	}
@@ -121,9 +116,7 @@ func runFetch(args []string, out io.Writer) error {
 }
 
 // fetchOne downloads and saves content for a single link, reporting the outcome.
-func fetchOne(s *store.Store, l store.Link, out io.Writer) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+func fetchOne(ctx context.Context, s *store.Store, l store.Link, out io.Writer) error {
 	art, err := fetch.Fetch(ctx, l.URL)
 	if err == nil {
 		err = s.SaveContent(l.ID, art.Title, art.Text, art.HTML, art.Snapshot)
@@ -135,8 +128,8 @@ func fetchOne(s *store.Store, l store.Link, out io.Writer) error {
 	return nil
 }
 
-func runOpen(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("open", flag.ContinueOnError)
+func runOpen(ctx context.Context, args []string, out io.Writer) error {
+	fs := newFlagSet("open", out)
 	outFile := fs.String("o", "", "write the snapshot to this file instead of opening it")
 	raw, err := parseWithArg(fs, args)
 	if err != nil {
@@ -200,8 +193,8 @@ func openInBrowser(path string) error {
 	return nil
 }
 
-func runShow(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("show", flag.ContinueOnError)
+func runShow(ctx context.Context, args []string, out io.Writer) error {
+	fs := newFlagSet("show", out)
 	asHTML := fs.Bool("html", false, "print cleaned-up HTML instead of plain text")
 	raw, err := parseWithArg(fs, args)
 	if err != nil {

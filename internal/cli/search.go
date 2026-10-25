@@ -6,8 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
-	"os/signal"
 	"strings"
 
 	"liki/internal/embed"
@@ -15,8 +13,8 @@ import (
 	"liki/internal/store"
 )
 
-func runSearch(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("search", flag.ContinueOnError)
+func runSearch(ctx context.Context, args []string, out io.Writer) error {
+	fs := newFlagSet("search", out)
 	n := fs.Int("n", 10, "maximum number of results")
 	words, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -32,8 +30,6 @@ func runSearch(args []string, out io.Writer) error {
 		return err
 	}
 	defer s.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	c := embed.New()
 
 	// Links added or changed since the last search are indexed first.
@@ -62,8 +58,8 @@ func runSearch(args []string, out io.Writer) error {
 	return nil
 }
 
-func runIndex(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("index", flag.ContinueOnError)
+func runIndex(ctx context.Context, args []string, out io.Writer) error {
+	fs := newFlagSet("index", out)
 	all := fs.Bool("all", false, "rebuild the index of every link")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -74,8 +70,6 @@ func runIndex(args []string, out io.Writer) error {
 		return err
 	}
 	defer s.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	c := embed.New()
 
 	links, err := s.Unindexed(c.Model)
@@ -118,9 +112,7 @@ func indexPending(ctx context.Context, s *store.Store, c *embed.Client, out io.W
 
 // indexAfterChange keeps the search index fresh after add, edit or fetch.
 // A failure is only a warning: the link is saved and is indexed on the next search.
-func indexAfterChange(s *store.Store, out io.Writer) {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+func indexAfterChange(ctx context.Context, s *store.Store, out io.Writer) {
 	if _, err := indexPending(ctx, s, embed.New(), out); err != nil {
 		fmt.Fprintf(out, "warning: search index not updated: %v\n", err)
 	}
