@@ -30,8 +30,8 @@ Usage:
   liki show <id> [-html]                     read saved article text
   liki open <id> [-o file.html]              open the saved page, with its original
                                              styles, in the browser (offline)
-  liki search <words...> [-n 10]             find links by meaning: title, tags,
-                                             URL and article text
+  liki search <words...> [-n 10]             find links by meaning and keywords in
+                                             title, tags, URL and article text
   liki index [-all]                          build the search index for links
                                              missing it (-all: rebuild everything)
   liki help                                  show this help

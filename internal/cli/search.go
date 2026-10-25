@@ -48,13 +48,16 @@ func runSearch(args []string, out io.Writer) error {
 		return err
 	}
 	if len(results) == 0 {
-		fmt.Fprintln(out, "no links yet - add one with 'liki add <url>'")
+		fmt.Fprintln(out, "no matching links")
 		return nil
 	}
 	for _, r := range results {
-		fmt.Fprintf(out, "%.2f ", r.Score)
 		printLink(out, r.Link)
-		fmt.Fprintf(out, "          %s\n\n", snippet(r.Snippet, 160))
+		how := fmt.Sprintf("meaning %.2f", r.Similarity)
+		if r.Words > 0 {
+			how += fmt.Sprintf(" · words %d/%d", r.Words, r.TotalWords)
+		}
+		fmt.Fprintf(out, "     (%s) %s\n\n", how, snippet(r.Snippet, 150))
 	}
 	return nil
 }

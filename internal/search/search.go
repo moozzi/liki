@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"liki/internal/embed"
@@ -35,7 +36,7 @@ func Index(ctx context.Context, s *store.Store, c *embed.Client, l store.Link) e
 	if err != nil {
 		return err
 	}
-	return s.ReplaceChunks(l.ID, c.Model, chunks, vecs)
+	return s.ReplaceChunks(l.ID, c.Model, l.Title, chunks, vecs)
 }
 
 // Chunks splits a link into pieces for indexing. The first piece describes the
@@ -84,15 +85,111 @@ func Chunks(l store.Link, text string) []string {
 	return chunks
 }
 
+const (
+	// candidates is how many links each ranking contributes to the fusion.
+	candidates = 50
+	// rrfK damps the weight of top ranks in reciprocal rank fusion; 60 is the usual choice.
+	rrfK = 60
+)
+
+// minSimilarity hides links that match only by meaning, and only weakly.
+// With bge-m3, unrelated texts usually score below 0.45.
+const minSimilarity = 0.45
+
 type Result struct {
-	Link    store.Link
-	Score   float32
-	Snippet string // the best matching piece of the link
+	Link       store.Link
+	Score      float64 // reciprocal rank fusion score, used for ordering
+	Similarity float32 // cosine similarity of the best matching chunk
+	Words      int     // how many query words the link contains
+	TotalWords int     // how many distinct words the query has
+	Snippet    string  // the best matching piece of the link
 }
 
-// Search returns up to n links whose chunks are closest in meaning to query,
-// best first. A link scores as its best matching chunk.
+// Keyword reports whether the link counts as a keyword match: it contains at
+// least half of the query words, so one common word alone is not enough.
+func (r Result) Keyword() bool {
+	return r.TotalWords > 0 && 2*r.Words >= r.TotalWords
+}
+
+// Search returns up to n links matching query, best first. It combines two
+// rankings with reciprocal rank fusion: similarity in meaning (embedding
+// vectors) and keyword relevance (FTS5 BM25), so both related topics and
+// exact names like "pg_enum" are found.
 func Search(ctx context.Context, s *store.Store, c *embed.Client, query string, n int) ([]Result, error) {
+	byMeaning, err := vectorRanking(ctx, s, c, query)
+	if err != nil {
+		return nil, err
+	}
+
+	fused := map[int64]*Result{}
+	get := func(id int64) *Result {
+		if fused[id] == nil {
+			fused[id] = &Result{Link: store.Link{ID: id}}
+		}
+		return fused[id]
+	}
+	for i, v := range byMeaning[:min(candidates, len(byMeaning))] {
+		r := get(v.Link.ID)
+		r.Score += 1.0 / float64(rrfK+i+1)
+		r.Similarity, r.Snippet = v.Similarity, v.Snippet
+	}
+
+	words := queryWords(query)
+	if len(words) > 0 {
+		// Count how many of the query words each link contains.
+		found := map[int64]int{}
+		for _, w := range words {
+			ids, err := s.KeywordLinks(c.Model, quote(w))
+			if err != nil {
+				return nil, err
+			}
+			for _, id := range ids {
+				found[id]++
+			}
+		}
+		hits, err := s.KeywordSearch(c.Model, orQuery(words), candidates)
+		if err != nil {
+			return nil, err
+		}
+		rank := 0
+		for _, h := range hits {
+			r := get(h.LinkID)
+			r.Words, r.TotalWords = found[h.LinkID], len(words)
+			if !r.Keyword() {
+				continue
+			}
+			rank++
+			r.Score += 1.0 / float64(rrfK+rank)
+			// A keyword chunk shows the user's words, so it explains the match
+			// better, unless it is just the URL-and-tags chunk.
+			if !h.Meta {
+				r.Snippet = h.Text
+			}
+		}
+	}
+
+	results := make([]Result, 0, len(fused))
+	for _, r := range fused {
+		if r.Keyword() || r.Similarity >= minSimilarity {
+			results = append(results, *r)
+		}
+	}
+	slices.SortFunc(results, func(a, b Result) int {
+		return cmp.Or(cmp.Compare(b.Score, a.Score), cmp.Compare(b.Similarity, a.Similarity))
+	})
+	results = results[:min(n, len(results))]
+
+	for i := range results {
+		if results[i].Link, err = s.Get(results[i].Link.ID); err != nil {
+			return nil, err
+		}
+	}
+	return results, nil
+}
+
+// vectorRanking returns all indexed links ordered by similarity in meaning to
+// query. A link scores as its best matching chunk.
+func vectorRanking(ctx context.Context, s *store.Store, c *embed.Client, query string) ([]Result, error) {
 	qv, err := c.Embed(ctx, []string{query})
 	if err != nil {
 		return nil, err
@@ -104,22 +201,40 @@ func Search(ctx context.Context, s *store.Store, c *embed.Client, query string, 
 
 	best := map[int64]Result{}
 	for _, ch := range chunks {
-		score := embed.Dot(qv[0], ch.Vec)
-		if r, ok := best[ch.LinkID]; !ok || score > r.Score {
-			best[ch.LinkID] = Result{Link: store.Link{ID: ch.LinkID}, Score: score, Snippet: ch.Text}
+		sim := embed.Dot(qv[0], ch.Vec)
+		if r, ok := best[ch.LinkID]; !ok || sim > r.Similarity {
+			best[ch.LinkID] = Result{Link: store.Link{ID: ch.LinkID}, Similarity: sim, Snippet: ch.Text}
 		}
 	}
-	results := make([]Result, 0, len(best))
+	ranked := make([]Result, 0, len(best))
 	for _, r := range best {
-		results = append(results, r)
+		ranked = append(ranked, r)
 	}
-	slices.SortFunc(results, func(a, b Result) int { return cmp.Compare(b.Score, a.Score) })
-	results = results[:min(n, len(results))]
+	slices.SortFunc(ranked, func(a, b Result) int { return cmp.Compare(b.Similarity, a.Similarity) })
+	return ranked, nil
+}
 
-	for i := range results {
-		if results[i].Link, err = s.Get(results[i].Link.ID); err != nil {
-			return nil, err
+// queryWords splits a query into distinct lowercase words.
+func queryWords(query string) []string {
+	var words []string
+	for _, w := range strings.FieldsFunc(query, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+		if w = strings.ToLower(w); !slices.Contains(words, w) {
+			words = append(words, w)
 		}
 	}
-	return results, nil
+	return words
+}
+
+// orQuery builds an FTS5 query matching any of words.
+func orQuery(words []string) string {
+	quoted := make([]string, len(words))
+	for i, w := range words {
+		quoted[i] = quote(w)
+	}
+	return strings.Join(quoted, " OR ")
+}
+
+// quote makes w an FTS5 string, so characters like '-' or '*' are not query syntax.
+func quote(w string) string {
+	return `"` + strings.ReplaceAll(w, `"`, `""`) + `"`
 }

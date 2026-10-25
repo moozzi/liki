@@ -68,6 +68,14 @@ CREATE TABLE IF NOT EXISTS chunks (
 	vec     BLOB NOT NULL -- little-endian float32, unit length
 );
 CREATE INDEX IF NOT EXISTS chunks_link ON chunks(link_id);
+-- Full-text index of chunks (rowid = chunks.id) for keyword search.
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+	title, text,
+	tokenize = 'porter unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS chunks_fts_delete AFTER DELETE ON chunks BEGIN
+	DELETE FROM chunks_fts WHERE rowid = old.id;
+END;
 `
 
 // DefaultPath returns $LIKI_DB or ~/.liki/liki.db.
@@ -91,9 +99,22 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	var hadFTS bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'chunks_fts')`).Scan(&hadFTS); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
+	}
+	// Databases created before keyword search have chunks but no full-text index.
+	if !hadFTS {
+		if _, err := db.Exec(`INSERT INTO chunks_fts (rowid, title, text)
+			SELECT c.id, l.title, c.text FROM chunks c JOIN links l ON l.id = c.link_id`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("build full-text index: %w", err)
+		}
 	}
 	return &Store{db: db}, nil
 }
