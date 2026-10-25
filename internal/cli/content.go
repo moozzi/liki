@@ -61,6 +61,9 @@ func runFetch(ctx context.Context, args []string, out io.Writer) error {
 		return nil
 	}
 
+	f := fetch.NewFetcher()
+	defer f.Close()
+
 	type result struct {
 		link store.Link
 		art  fetch.Article
@@ -72,7 +75,7 @@ func runFetch(ctx context.Context, args []string, out io.Writer) error {
 	for range min(fetchWorkers, len(links)) {
 		wg.Go(func() {
 			for l := range jobs {
-				art, err := fetch.Fetch(ctx, l.URL)
+				art, err := f.Fetch(ctx, l.URL)
 				results <- result{l, art, err}
 			}
 		})
@@ -94,6 +97,7 @@ func runFetch(ctx context.Context, args []string, out io.Writer) error {
 
 	// Results are saved here, one at a time, so only one goroutine writes to the database.
 	var failed int
+	var renderErr error
 	for r := range results {
 		if r.err == nil {
 			r.err = s.SaveContent(r.link.ID, r.art.Title, r.art.Text, r.art.HTML, r.art.Snapshot)
@@ -104,9 +108,15 @@ func runFetch(ctx context.Context, args []string, out io.Writer) error {
 			continue
 		}
 		fmt.Fprintf(out, "fetched #%d %s (%s)\n", r.link.ID, r.link.URL, summary(r.art))
+		if renderErr == nil {
+			renderErr = r.art.RenderErr
+		}
 	}
 	if ctx.Err() != nil {
 		return errors.New("fetch: interrupted")
+	}
+	if renderErr != nil {
+		fmt.Fprintf(out, "note: some pages were saved as served, without running their scripts in Chrome: %v\n", renderErr)
 	}
 	indexAfterChange(ctx, s, out)
 	if failed > 0 {
@@ -117,7 +127,9 @@ func runFetch(ctx context.Context, args []string, out io.Writer) error {
 
 // fetchOne downloads and saves content for a single link, reporting the outcome.
 func fetchOne(ctx context.Context, s *store.Store, l store.Link, out io.Writer) error {
-	art, err := fetch.Fetch(ctx, l.URL)
+	f := fetch.NewFetcher()
+	defer f.Close()
+	art, err := f.Fetch(ctx, l.URL)
 	if err == nil {
 		err = s.SaveContent(l.ID, art.Title, art.Text, art.HTML, art.Snapshot)
 	}
@@ -125,6 +137,9 @@ func fetchOne(ctx context.Context, s *store.Store, l store.Link, out io.Writer) 
 		return err
 	}
 	fmt.Fprintf(out, "fetched content (%s)\n", summary(art))
+	if art.RenderErr != nil {
+		fmt.Fprintf(out, "note: saved as served, without running its scripts in Chrome: %v\n", art.RenderErr)
+	}
 	return nil
 }
 
@@ -229,6 +244,9 @@ func runShow(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintln(out, c.HTML)
 		return nil
 	}
+	if c.Title != "" {
+		fmt.Fprintln(out, c.Title)
+	}
 	printLink(out, l)
 	fmt.Fprintf(out, "     fetched %s\n\n", c.FetchedAt.Format("2006-01-02 15:04"))
 	fmt.Fprintln(out, c.Text)
@@ -236,5 +254,9 @@ func runShow(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func summary(a fetch.Article) string {
-	return fmt.Sprintf("%d words, snapshot %.1f MB", len(strings.Fields(a.Text)), float64(len(a.Snapshot))/(1<<20))
+	s := fmt.Sprintf("%d words, snapshot %.1f MB", len(strings.Fields(a.Text)), float64(len(a.Snapshot))/(1<<20))
+	if a.RenderErr != nil {
+		s += ", without browser"
+	}
+	return s
 }

@@ -1,6 +1,6 @@
 <img src="logo.svg" alt="liki logo" width="160">
 
-**Your local link wiki.** liki saves links to articles you want to remember, downloads their content and a full offline copy of each page, and lets you find them later by meaning, not just by exact title, tag or URL. Type `enum postgres` and you get every saved article about Postgres enums.
+**Your local link wiki.** liki saves links to articles you want to remember, downloads their content and a full offline copy of each page, and lets you find them later by meaning, not just by exact tag or URL. Type `enum postgres` and you get every saved article about Postgres enums.
 
 Everything stays on your machine: links, article text and page snapshots live in a single SQLite file, and search runs on a local embedding model.
 
@@ -8,6 +8,7 @@ Everything stays on your machine: links, article text and page snapshots live in
 
 - **[Go](https://go.dev/dl/) 1.27.3 or newer** to build liki.
 - **[Ollama](https://ollama.com)** with the **`bge-m3`** embedding model, for search. It understands English and Polish (and many other languages), so a Polish query finds English articles. Everything except search works without it.
+- **[Google Chrome](https://www.google.com/chrome/)** (or Chromium), optional. liki opens each page in headless Chrome before saving it, so content drawn by JavaScript is captured too. Without Chrome, pages are saved as the server sends them.
 
   ```sh
   brew install ollama
@@ -22,6 +23,7 @@ Go libraries (fetched automatically by `go build`):
 | [modernc.org/sqlite](https://gitlab.com/cznic/sqlite) | database, pure Go (no cgo), with FTS5 full-text search |
 | [codeberg.org/readeck/go-readability](https://codeberg.org/readeck/go-readability) | extracting readable article text from pages |
 | [golang.org/x/net/html](https://pkg.go.dev/golang.org/x/net/html) | building self-contained page snapshots |
+| [chromedp](https://github.com/chromedp/chromedp) | rendering pages in headless Chrome |
 | [Bubble Tea](https://github.com/charmbracelet/bubbletea), [Bubbles](https://github.com/charmbracelet/bubbles), [Lip Gloss](https://github.com/charmbracelet/lipgloss) | interactive mode and styling |
 
 ## Install
@@ -58,12 +60,12 @@ $ liki
 
 | Command | What it does |
 |---|---|
-| `add <url> [-title ...] [-tags a,b] [-no-fetch]` | Save a link. Downloads the article text and an offline snapshot right away unless `-no-fetch` is given. |
-| `search <words...> [-n 10]` | Find links by meaning and keywords in their title, tags, URL and article text. In interactive mode, just type the words. |
+| `add <url> [-tags a,b] [-no-fetch]` | Save a link. Downloads the article text and an offline snapshot right away unless `-no-fetch` is given. |
+| `search <words...> [-n 10]` | Find links by meaning and keywords in their tags, URL and article text. In interactive mode, just type the words. |
 | `list [page] [-n 20] [-tags a,b]` | Show saved links, newest first, one page at a time. `-tags` keeps links with any of the tags. |
 | `show <id> [-html]` | Print the saved article text (or its cleaned-up HTML). |
 | `open <id> [-o file.html]` | Open the saved page, with its original styles and images, in the browser. Works offline. `-o` saves it to a file instead. |
-| `edit <id> [-url ...] [-title ...] [-tags a,b]` | Change a link. Only the given fields change; `-tags` replaces all tags, `-title ''` clears the title. |
+| `edit <id> [-url ...] [-tags a,b]` | Change a link. Only the given fields change; `-tags` replaces all tags, `-tags ''` clears them. Changing the URL drops the saved content. |
 | `rm <id> [<id>...]` | Remove links with their content. |
 | `fetch [-all] [<id>...]` | Download content for links missing it, the given links, or all of them with `-all`. |
 | `index [-all]` | Build the search index for links missing it, or rebuild it with `-all`. Usually not needed: liki indexes links when they are added, changed or searched. |
@@ -77,7 +79,7 @@ Interactive mode also has `/help`, `/clear` and `/exit` (plain `exit` or `quit` 
 liki add https://www.postgresql.org/docs/current/datatype-enum.html -tags postgres,sql
 liki add https://go.dev/blog/maps -tags go
 
-# Find them later without remembering titles or tags
+# Find them later without remembering URLs or tags
 liki search enum postgres
 liki search "how do maps work in go"
 liki search typ wyliczeniowy w bazie danych   # Polish query, English articles
@@ -92,7 +94,7 @@ liki show 3                  # article text in the terminal
 liki open 3                  # original page in the browser, offline
 
 # Maintain
-liki edit 3 -title "Postgres enums" -tags postgres,enum
+liki edit 3 -tags postgres,enum
 liki rm 3 4
 liki fetch                   # fetch content that failed before
 ```
@@ -118,11 +120,12 @@ Searching compares stored vectors only; article text is never re-read at search 
 | `LIKI_DB` | `~/.liki/liki.db` | database file |
 | `OLLAMA_HOST` | `localhost:11434` | Ollama server |
 | `LIKI_EMBED_MODEL` | `bge-m3` | embedding model; changing it re-indexes links on the next search |
+| `LIKI_BROWSER` | found automatically | path to Chrome, or `off` to save pages without rendering them |
 
 Interactive mode keeps its input history in `history` next to the database.
 
 ## Limitations
 
-- Pages rendered entirely by JavaScript (some single-page apps) may save little or no content. Paywalled pages and PDFs are not supported.
-- Snapshots don't include content a page loads with scripts after it opens, and embedded iframes (like videos) work only online.
+- Paywalled pages, pages behind a login and PDFs are not supported. Some sites block headless browsers.
+- Snapshots keep the page as it looked once loaded, without its scripts: interactive parts (menus, tabs, links that run scripts) don't work offline, and embedded iframes (like videos) work only online.
 - Keyword search stems English words only.

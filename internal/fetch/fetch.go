@@ -31,10 +31,24 @@ type Article struct {
 	// Snapshot is the whole original page as a single HTML file with
 	// styles, images and fonts embedded, viewable offline.
 	Snapshot []byte
+	// RenderErr says why the page was not rendered in Chrome, so content
+	// drawn by scripts may be missing; nil when it was rendered.
+	RenderErr error
 }
 
-// Fetch downloads rawURL, extracts its main content and builds a snapshot.
-func Fetch(ctx context.Context, rawURL string) (Article, error) {
+// Fetcher downloads pages. It renders them in headless Chrome when
+// available; Close stops the browser.
+type Fetcher struct {
+	browser browser
+}
+
+func NewFetcher() *Fetcher { return &Fetcher{} }
+
+func (f *Fetcher) Close() { f.browser.close() }
+
+// Fetch downloads rawURL, renders it, extracts its main content and builds
+// a snapshot. Without Chrome it uses the page as served, before scripts run.
+func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Article, error) {
 	body, pageURL, ctype, err := get(ctx, rawURL, "text/html,application/xhtml+xml", maxBody)
 	if err != nil {
 		return Article{}, err
@@ -49,6 +63,15 @@ func Fetch(ctx context.Context, rawURL string) (Article, error) {
 	}
 	if body, err = io.ReadAll(r); err != nil {
 		return Article{}, fmt.Errorf("decode page: %w", err)
+	}
+	// The plain download above still checks the status and content type,
+	// which the browser would not report as errors.
+	rendered, finalURL, renderErr := f.browser.render(ctx, pageURL.String())
+	if ctx.Err() != nil {
+		return Article{}, ctx.Err()
+	}
+	if renderErr == nil {
+		body, pageURL = []byte(rendered), finalURL
 	}
 
 	art, err := readability.FromReader(bytes.NewReader(body), pageURL)
@@ -71,10 +94,11 @@ func Fetch(ctx context.Context, rawURL string) (Article, error) {
 		return Article{}, fmt.Errorf("snapshot: %w", err)
 	}
 	return Article{
-		Title:    strings.TrimSpace(art.Title()),
-		Text:     strings.TrimSpace(text.String()),
-		HTML:     html.String(),
-		Snapshot: snap,
+		Title:     strings.TrimSpace(art.Title()),
+		Text:      strings.TrimSpace(text.String()),
+		HTML:      html.String(),
+		Snapshot:  snap,
+		RenderErr: renderErr,
 	}, nil
 }
 

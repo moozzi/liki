@@ -17,13 +17,12 @@ import (
 const usage = `liki - local wiki for links
 
 Usage:
-  liki add <url> [-title "..."] [-tags a,b] [-no-fetch]
+  liki add <url> [-tags a,b] [-no-fetch]
                                              save a link and download its content
   liki list [page] [-n 20] [-tags a,b]       show saved links, newest first, a page
                                              at a time; -tags keeps links with any
                                              of the given tags
-  liki edit <id> [-url ...] [-title ...] [-tags a,b]
-                                             change a link (only given fields;
+  liki edit <id> [-url ...] [-tags a,b]     change a link (only given fields;
                                              -tags replaces all tags)
   liki rm <id> [<id>...]                     remove links by id
   liki fetch [-all] [<id>...]                download article content and page
@@ -33,7 +32,7 @@ Usage:
   liki open <id> [-o file.html]              open the saved page, with its original
                                              styles, in the browser (offline)
   liki search <words...> [-n 10]             find links by meaning and keywords in
-                                             title, tags, URL and article text
+                                             tags, URL and article text
   liki index [-all]                          build the search index for links
                                              missing it (-all: rebuild everything)
   liki help                                  show this help
@@ -52,11 +51,11 @@ type Command struct {
 
 var Commands = []Command{
 	{"search", "<words...> [-n 10]", "find links by meaning and keywords"},
-	{"add", "<url> [-title ...] [-tags a,b] [-no-fetch]", "save a link and download its content"},
+	{"add", "<url> [-tags a,b] [-no-fetch]", "save a link and download its content"},
 	{"list", "[page] [-n 20] [-tags a,b]", "show saved links, newest first, a page at a time"},
 	{"show", "<id> [-html]", "read saved article text"},
 	{"open", "<id> [-o file.html]", "open the saved page, with original styles, in the browser"},
-	{"edit", "<id> [-url ...] [-title ...] [-tags a,b]", "change a link (-tags replaces all tags)"},
+	{"edit", "<id> [-url ...] [-tags a,b]", "change a link (-tags replaces all tags)"},
 	{"rm", "<id> [<id>...]", "remove links"},
 	{"fetch", "[-all] [<id>...]", "download content of links missing it"},
 	{"index", "[-all]", "build the search index for links missing it"},
@@ -122,7 +121,6 @@ func openStore() (*store.Store, error) {
 
 func runAdd(ctx context.Context, args []string, out io.Writer) error {
 	fs := newFlagSet("add", out)
-	title := fs.String("title", "", "link title")
 	tags := fs.String("tags", "", "comma-separated tags")
 	noFetch := fs.Bool("no-fetch", false, "save only the link, without downloading its content")
 
@@ -143,7 +141,7 @@ func runAdd(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer s.Close()
-	l, err := s.Add(u, *title, splitTags(*tags))
+	l, err := s.Add(u, splitTags(*tags))
 	if err != nil {
 		return err
 	}
@@ -217,7 +215,6 @@ func runList(ctx context.Context, args []string, out io.Writer) error {
 func runEdit(ctx context.Context, args []string, out io.Writer) error {
 	fs := newFlagSet("edit", out)
 	newURL := fs.String("url", "", "new url")
-	title := fs.String("title", "", "new title (empty clears it)")
 	tags := fs.String("tags", "", "new comma-separated tags, replacing old ones (empty clears them)")
 
 	rawID, err := parseWithArg(fs, args)
@@ -232,21 +229,19 @@ func runEdit(ctx context.Context, args []string, out io.Writer) error {
 		return fmt.Errorf("edit: %w", err)
 	}
 
-	// Only flags given explicitly are changed, so "-title ''" can clear a title.
+	// Only flags given explicitly are changed, so "-tags ''" can clear the tags.
 	var p store.Patch
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "url":
 			p.URL = newURL
-		case "title":
-			p.Title = title
 		case "tags":
 			t := splitTags(*tags)
 			p.Tags = &t
 		}
 	})
-	if p.URL == nil && p.Title == nil && p.Tags == nil {
-		return errors.New("edit: nothing to change (use -url, -title or -tags)")
+	if p.URL == nil && p.Tags == nil {
+		return errors.New("edit: nothing to change (use -url or -tags)")
 	}
 	if p.URL != nil {
 		u, err := parseURL(*p.URL)
@@ -273,9 +268,6 @@ func runEdit(ctx context.Context, args []string, out io.Writer) error {
 
 func printLink(out io.Writer, l store.Link) {
 	fmt.Fprintf(out, "#%-3d %s\n", l.ID, l.URL)
-	if l.Title != "" {
-		fmt.Fprintf(out, "     %s\n", l.Title)
-	}
 	if len(l.Tags) > 0 {
 		fmt.Fprintf(out, "     [%s]\n", strings.Join(l.Tags, ", "))
 	}

@@ -27,20 +27,23 @@ func Index(ctx context.Context, s *store.Store, c *embed.Client, l store.Link) e
 	}
 	chunks := Chunks(l, content.Text)
 
-	// Every chunk is embedded with the title so it keeps the article's context.
+	// Every chunk is embedded with the page title so it keeps the article's context.
 	inputs := make([]string, len(chunks))
 	for i, ch := range chunks {
-		inputs[i] = l.Title + "\n\n" + ch
+		inputs[i] = ch
+		if content.Title != "" {
+			inputs[i] = content.Title + "\n\n" + ch
+		}
 	}
 	vecs, err := c.Embed(ctx, inputs)
 	if err != nil {
 		return err
 	}
-	return s.ReplaceChunks(l.ID, c.Model, l.Title, chunks, vecs)
+	return s.ReplaceChunks(l.ID, c.Model, content.Title, chunks, vecs)
 }
 
 // Chunks splits a link into pieces for indexing. The first piece describes the
-// link itself (title, URL, tags) so links without content are searchable too.
+// link itself (URL, tags) so links without content are searchable too.
 func Chunks(l store.Link, text string) []string {
 	meta := l.URL
 	if len(l.Tags) > 0 {

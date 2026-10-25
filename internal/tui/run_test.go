@@ -12,10 +12,10 @@ func TestSplitArgs(t *testing.T) {
 	}{
 		{`list`, []string{"list"}},
 		{`  add  https://x.y   -tags a,b `, []string{"add", "https://x.y", "-tags", "a,b"}},
-		{`edit 3 -title "Go maps in action"`, []string{"edit", "3", "-title", "Go maps in action"}},
-		{`edit 3 -title ''`, []string{"edit", "3", "-title", ""}},
-		{`edit 3 -title 'it\'s'`, nil}, // backslash is literal inside single quotes
-		{`edit 3 -title "say \"hi\""`, []string{"edit", "3", "-title", `say "hi"`}},
+		{`edit 3 -tags "go, maps"`, []string{"edit", "3", "-tags", "go, maps"}},
+		{`edit 3 -tags ''`, []string{"edit", "3", "-tags", ""}},
+		{`edit 3 -tags 'it\'s'`, nil}, // backslash is literal inside single quotes
+		{`edit 3 -tags "say \"hi\""`, []string{"edit", "3", "-tags", `say "hi"`}},
 		{`rm #3 #4`, []string{"rm", "#3", "#4"}},
 		{`a\ b`, []string{"a b"}},
 	}

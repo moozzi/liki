@@ -19,7 +19,6 @@ import (
 type Link struct {
 	ID          int64
 	URL         string
-	Title       string
 	Tags        []string
 	AddedAt     time.Time
 	FetchedAt   time.Time // zero if content was never fetched
@@ -28,6 +27,7 @@ type Link struct {
 
 // Content is the downloaded, readable version of a linked article.
 type Content struct {
+	Title     string // the page title
 	Text      string
 	HTML      string
 	FetchedAt time.Time
@@ -41,7 +41,6 @@ const schema = `
 CREATE TABLE IF NOT EXISTS links (
 	id       INTEGER PRIMARY KEY AUTOINCREMENT,
 	url      TEXT NOT NULL,
-	title    TEXT NOT NULL DEFAULT '',
 	added_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS link_tags (
@@ -52,6 +51,7 @@ CREATE TABLE IF NOT EXISTS link_tags (
 CREATE INDEX IF NOT EXISTS link_tags_tag ON link_tags(tag);
 CREATE TABLE IF NOT EXISTS contents (
 	link_id    INTEGER PRIMARY KEY REFERENCES links(id) ON DELETE CASCADE,
+	title      TEXT NOT NULL DEFAULT '',
 	text       TEXT NOT NULL,
 	html       TEXT NOT NULL,
 	fetched_at INTEGER NOT NULL
@@ -108,10 +108,14 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate database: %w", err)
+	}
 	// Databases created before keyword search have chunks but no full-text index.
 	if !hadFTS {
 		if _, err := db.Exec(`INSERT INTO chunks_fts (rowid, title, text)
-			SELECT c.id, l.title, c.text FROM chunks c JOIN links l ON l.id = c.link_id`); err != nil {
+			SELECT c.id, COALESCE(ct.title, ''), c.text FROM chunks c LEFT JOIN contents ct ON ct.link_id = c.link_id`); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("build full-text index: %w", err)
 		}
@@ -119,12 +123,48 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// migrate brings databases created by older versions of liki up to date.
+func migrate(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Links used to have an editable title; now only the fetched page title
+	// is kept, with the article content. Existing titles move there.
+	if ok, err := hasColumn(tx, "contents", "title"); err != nil {
+		return err
+	} else if !ok {
+		if _, err := tx.Exec(`ALTER TABLE contents ADD COLUMN title TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if ok, err := hasColumn(tx, "links", "title"); err != nil {
+		return err
+	} else if ok {
+		if _, err := tx.Exec(`UPDATE contents SET title = (SELECT title FROM links WHERE links.id = contents.link_id) WHERE title = ''`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`ALTER TABLE links DROP COLUMN title`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func hasColumn(tx *sql.Tx, table, column string) (bool, error) {
+	var n int
+	err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n)
+	return n > 0, err
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-func (s *Store) Add(url, title string, tags []string) (Link, error) {
-	l := Link{URL: url, Title: title, Tags: tags, AddedAt: time.Now()}
+func (s *Store) Add(url string, tags []string) (Link, error) {
+	l := Link{URL: url, Tags: tags, AddedAt: time.Now()}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -132,8 +172,7 @@ func (s *Store) Add(url, title string, tags []string) (Link, error) {
 	}
 	defer tx.Rollback()
 
-	res, err := tx.Exec(`INSERT INTO links (url, title, added_at) VALUES (?, ?, ?)`,
-		l.URL, l.Title, l.AddedAt.Unix())
+	res, err := tx.Exec(`INSERT INTO links (url, added_at) VALUES (?, ?)`, l.URL, l.AddedAt.Unix())
 	if err != nil {
 		return Link{}, err
 	}
@@ -169,9 +208,8 @@ func (s *Store) Delete(id int64) error {
 
 // Patch describes changes to a link; nil fields are left unchanged.
 type Patch struct {
-	URL   *string
-	Title *string
-	Tags  *[]string // replaces all tags
+	URL  *string
+	Tags *[]string // replaces all tags
 }
 
 // Update applies p to the link with the given id and returns the updated link.
@@ -182,8 +220,7 @@ func (s *Store) Update(id int64, p Patch) (Link, error) {
 	}
 	defer tx.Rollback()
 
-	res, err := tx.Exec(`UPDATE links SET url = COALESCE(?, url), title = COALESCE(?, title) WHERE id = ?`,
-		p.URL, p.Title, id)
+	res, err := tx.Exec(`UPDATE links SET url = COALESCE(?, url) WHERE id = ?`, p.URL, id)
 	if err != nil {
 		return Link{}, err
 	}
@@ -194,7 +231,7 @@ func (s *Store) Update(id int64, p Patch) (Link, error) {
 	if n == 0 {
 		return Link{}, ErrNotFound
 	}
-	// The search index embeds title, URL and tags, so any change makes it stale.
+	// The search index embeds the URL and tags, so any change makes it stale.
 	if _, err := tx.Exec(`DELETE FROM chunks WHERE link_id = ?`, id); err != nil {
 		return Link{}, err
 	}
@@ -238,7 +275,7 @@ func (s *Store) Get(id int64) (Link, error) {
 var ErrNoContent = errors.New("content not fetched yet")
 
 // SaveContent stores the article content and page snapshot for a link,
-// replacing any previous version. title is used only if the link has no title yet.
+// replacing any previous version. title is the page title.
 func (s *Store) SaveContent(id int64, title, text, html string, snapshot []byte) error {
 	var gz bytes.Buffer
 	zw := gzip.NewWriter(&gz)
@@ -255,19 +292,15 @@ func (s *Store) SaveContent(id int64, title, text, html string, snapshot []byte)
 	}
 	defer tx.Rollback()
 
-	res, err := tx.Exec(`UPDATE links SET title = CASE WHEN title = '' THEN ? ELSE title END WHERE id = ?`, title, id)
-	if err != nil {
+	var exists bool
+	if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM links WHERE id = ?)`, id).Scan(&exists); err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
+	if !exists {
 		return ErrNotFound
 	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO contents (link_id, text, html, fetched_at) VALUES (?, ?, ?, ?)`,
-		id, text, html, time.Now().Unix()); err != nil {
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO contents (link_id, title, text, html, fetched_at) VALUES (?, ?, ?, ?, ?)`,
+		id, title, text, html, time.Now().Unix()); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO snapshots (link_id, html_gz) VALUES (?, ?)`, id, gz.Bytes()); err != nil {
@@ -304,8 +337,8 @@ func (s *Store) GetContent(id int64) (Content, error) {
 		c       Content
 		fetched int64
 	)
-	err := s.db.QueryRow(`SELECT text, html, fetched_at FROM contents WHERE link_id = ?`, id).
-		Scan(&c.Text, &c.HTML, &fetched)
+	err := s.db.QueryRow(`SELECT title, text, html, fetched_at FROM contents WHERE link_id = ?`, id).
+		Scan(&c.Title, &c.Text, &c.HTML, &fetched)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Content{}, ErrNoContent
 	}
@@ -376,7 +409,7 @@ const byID = `ORDER BY l.id`
 // alias l and tail orders (and may limit) the result.
 func (s *Store) query(where, tail string, args ...any) ([]Link, error) {
 	rows, err := s.db.Query(`
-		SELECT l.id, l.url, l.title, l.added_at, COALESCE(c.fetched_at, 0),
+		SELECT l.id, l.url, l.added_at, COALESCE(c.fetched_at, 0),
 			EXISTS (SELECT 1 FROM snapshots s WHERE s.link_id = l.id),
 			COALESCE(GROUP_CONCAT(t.tag, char(31)), '')
 		FROM links l
@@ -397,7 +430,7 @@ func (s *Store) query(where, tail string, args ...any) ([]Link, error) {
 			added, fetched int64
 			tags           string
 		)
-		if err := rows.Scan(&l.ID, &l.URL, &l.Title, &added, &fetched, &l.HasSnapshot, &tags); err != nil {
+		if err := rows.Scan(&l.ID, &l.URL, &added, &fetched, &l.HasSnapshot, &tags); err != nil {
 			return nil, err
 		}
 		l.AddedAt = time.Unix(added, 0)
