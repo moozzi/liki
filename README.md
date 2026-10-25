@@ -68,7 +68,7 @@ $ liki
 | `fetch [-all] [<id>...]` | Download content for links missing it, the given links, or all of them with `-all`. |
 | `index [-all]` | Build the search index for links missing it, or rebuild it with `-all`. Usually not needed: liki indexes links when they are added, changed or searched. |
 
-Interactive mode also has `/help`, `/clear` and `/exit`.
+Interactive mode also has `/help`, `/clear` and `/exit` (plain `exit` or `quit` work too).
 
 ### Examples
 

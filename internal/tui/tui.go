@@ -302,7 +302,9 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 // execute runs one input line: a /command, or a search for plain text.
 func (m *model) execute(line string) tea.Cmd {
 	switch line {
-	case "/exit", "/quit", "/q":
+	// Plain "exit" and "quit" also quit, like in a shell; to search for these
+	// words use /search.
+	case "/exit", "/quit", "/q", "exit", "quit":
 		return tea.Quit
 	case "/clear":
 		return tea.Sequence(tea.ClearScreen, tea.Println(banner(m.width)))
