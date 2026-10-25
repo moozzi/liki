@@ -19,8 +19,9 @@ const usage = `liki - local wiki for links
 Usage:
   liki add <url> [-title "..."] [-tags a,b] [-no-fetch]
                                              save a link and download its content
-  liki list [-tags a,b]                      show saved links; -tags keeps links
-                                             with any of the given tags
+  liki list [page] [-n 20] [-tags a,b]       show saved links, newest first, a page
+                                             at a time; -tags keeps links with any
+                                             of the given tags
   liki edit <id> [-url ...] [-title ...] [-tags a,b]
                                              change a link (only given fields;
                                              -tags replaces all tags)
@@ -52,7 +53,7 @@ type Command struct {
 var Commands = []Command{
 	{"search", "<words...> [-n 10]", "find links by meaning and keywords"},
 	{"add", "<url> [-title ...] [-tags a,b] [-no-fetch]", "save a link and download its content"},
-	{"list", "[-tags a,b]", "show saved links, optionally only with any of the tags"},
+	{"list", "[page] [-n 20] [-tags a,b]", "show saved links, newest first, a page at a time"},
 	{"show", "<id> [-html]", "read saved article text"},
 	{"open", "<id> [-o file.html]", "open the saved page, with original styles, in the browser"},
 	{"edit", "<id> [-url ...] [-title ...] [-tags a,b]", "change a link (-tags replaces all tags)"},
@@ -160,11 +161,19 @@ func runAdd(ctx context.Context, args []string, out io.Writer) error {
 func runList(ctx context.Context, args []string, out io.Writer) error {
 	fs := newFlagSet("list", out)
 	tags := fs.String("tags", "", "comma-separated tags; shows links with any of them")
-	if err := fs.Parse(args); err != nil {
+	size := fs.Int("n", 20, "links per page")
+	rawPage, err := parseWithArg(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("list: unexpected argument %q", fs.Arg(0))
+	page := 1
+	if rawPage != "" {
+		if page, err = strconv.Atoi(rawPage); err != nil || page < 1 {
+			return fmt.Errorf("list: invalid page %q", rawPage)
+		}
+	}
+	if *size < 1 {
+		return errors.New("list: -n must be at least 1")
 	}
 	filter := splitTags(*tags)
 
@@ -173,21 +182,35 @@ func runList(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer s.Close()
-	links, err := s.FindByTags(filter)
+	links, total, err := s.Page(filter, (page-1)*(*size), *size)
 	if err != nil {
 		return err
 	}
-	if len(links) == 0 {
-		if len(filter) > 0 {
-			fmt.Fprintln(out, "no links match the given tags")
-		} else {
-			fmt.Fprintln(out, "no links yet - add one with 'liki add <url>'")
-		}
+	switch {
+	case total == 0 && len(filter) > 0:
+		fmt.Fprintln(out, "no links match the given tags")
+		return nil
+	case total == 0:
+		fmt.Fprintf(out, "no links yet - add one with '%s'\n", commandHint(out, "add <url>"))
 		return nil
 	}
-	for _, l := range links {
-		printLink(out, l)
+	pages := (total + *size - 1) / *size
+	if page > pages {
+		return fmt.Errorf("list: page %d does not exist, there are %d", page, pages)
 	}
+
+	// The command for the next page repeats the options of this one.
+	next := fmt.Sprintf("list %d", page+1)
+	if *tags != "" {
+		next += " -tags " + strings.Join(filter, ",")
+	}
+	if *size != 20 {
+		next += fmt.Sprintf(" -n %d", *size)
+	}
+	printLinks(out, links, listPage{
+		first: (page-1)*(*size) + 1, total: total,
+		page: page, pages: pages, next: commandHint(out, next),
+	})
 	return nil
 }
 

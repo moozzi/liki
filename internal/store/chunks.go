@@ -135,7 +135,7 @@ func (s *Store) Chunks(model string) ([]Chunk, error) {
 
 // Unindexed returns links that have no search index built with model.
 func (s *Store) Unindexed(model string) ([]Link, error) {
-	return s.query(`WHERE NOT EXISTS (SELECT 1 FROM chunks ch WHERE ch.link_id = l.id AND ch.model = ?)`, model)
+	return s.query(`WHERE NOT EXISTS (SELECT 1 FROM chunks ch WHERE ch.link_id = l.id AND ch.model = ?)`, byID, model)
 }
 
 func encodeVec(v []float32) []byte {

@@ -224,7 +224,7 @@ func (s *Store) Update(id int64, p Patch) (Link, error) {
 
 // Get returns the link with the given id.
 func (s *Store) Get(id int64) (Link, error) {
-	links, err := s.query(`WHERE l.id = ?`, id)
+	links, err := s.query(`WHERE l.id = ?`, byID, id)
 	if err != nil {
 		return Link{}, err
 	}
@@ -318,25 +318,63 @@ func (s *Store) GetContent(id int64) (Content, error) {
 
 // List returns all links ordered by id, with their tags.
 func (s *Store) List() ([]Link, error) {
-	return s.query("")
+	return s.query("", byID)
 }
 
-// FindByTags returns links tagged with any of tags (case-insensitive).
-// With no tags it returns all links.
-func (s *Store) FindByTags(tags []string) ([]Link, error) {
+// Page returns up to limit links, newest first, skipping the first offset,
+// and how many links match in total. With tags, only links tagged with any
+// of them (case-insensitive) match.
+func (s *Store) Page(tags []string, offset, limit int) ([]Link, int, error) {
+	where, args := tagFilter(tags)
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM links l `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	links, err := s.query(where, `ORDER BY l.id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	return links, total, err
+}
+
+// Stats summarizes the saved links.
+type Stats struct {
+	Links, Tags int
+	LastAdded   time.Time // zero when there are no links
+}
+
+func (s *Store) Stats() (Stats, error) {
+	var (
+		st   Stats
+		last int64
+	)
+	err := s.db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM links),
+		(SELECT COUNT(DISTINCT lower(tag)) FROM link_tags),
+		(SELECT COALESCE(MAX(added_at), 0) FROM links)`).Scan(&st.Links, &st.Tags, &last)
+	if last != 0 {
+		st.LastAdded = time.Unix(last, 0)
+	}
+	return st, err
+}
+
+// tagFilter returns a WHERE clause on alias l keeping links tagged with any
+// of tags, or "" when tags is empty.
+func tagFilter(tags []string) (string, []any) {
 	if len(tags) == 0 {
-		return s.List()
+		return "", nil
 	}
 	args := make([]any, len(tags))
 	for i, t := range tags {
 		args[i] = strings.ToLower(t)
 	}
 	placeholders := "?" + strings.Repeat(", ?", len(tags)-1)
-	return s.query(`WHERE l.id IN (SELECT link_id FROM link_tags WHERE lower(tag) IN (`+placeholders+`))`, args...)
+	return `WHERE l.id IN (SELECT link_id FROM link_tags WHERE lower(tag) IN (` + placeholders + `))`, args
 }
 
-// query selects links with their tags; where is an optional WHERE clause on alias l.
-func (s *Store) query(where string, args ...any) ([]Link, error) {
+// byID is the default order of links: oldest first.
+const byID = `ORDER BY l.id`
+
+// query selects links with their tags; where is an optional WHERE clause on
+// alias l and tail orders (and may limit) the result.
+func (s *Store) query(where, tail string, args ...any) ([]Link, error) {
 	rows, err := s.db.Query(`
 		SELECT l.id, l.url, l.title, l.added_at, COALESCE(c.fetched_at, 0),
 			EXISTS (SELECT 1 FROM snapshots s WHERE s.link_id = l.id),
@@ -346,7 +384,7 @@ func (s *Store) query(where string, args ...any) ([]Link, error) {
 		LEFT JOIN contents c ON c.link_id = l.id
 		`+where+`
 		GROUP BY l.id
-		ORDER BY l.id`, args...)
+		`+tail, args...)
 	if err != nil {
 		return nil, err
 	}

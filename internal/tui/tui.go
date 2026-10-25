@@ -10,14 +10,17 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/lucasb-eyer/go-colorful"
 
 	"liki/internal/cli"
 	"liki/internal/store"
+	"liki/internal/theme"
 )
 
 // builtins are commands handled by the interactive mode itself.
@@ -28,13 +31,12 @@ var builtins = []cli.Command{
 }
 
 var (
-	accent    = lipgloss.Color("6")
-	dim       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	errStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	echoStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	boxStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
-	selStyle  = lipgloss.NewStyle().Foreground(accent).Bold(true)
-	nameStyle = lipgloss.NewStyle().Foreground(accent)
+	accent    = theme.Blue
+	dim       = theme.Dim
+	errStyle  = theme.Error
+	boxStyle  = theme.Box
+	selStyle  = theme.Strong
+	nameStyle = theme.Accent
 )
 
 // Run starts the interactive mode and blocks until the user quits.
@@ -49,12 +51,15 @@ type model struct {
 	input   textinput.Model
 	spinner spinner.Model
 	width   int
+	started bool // whether the banner was printed
 
 	// running is the command currently executing, "" when idle.
 	running string
 	cancel  context.CancelFunc
 	// queue holds lines entered while a command was running.
 	queue []string
+	// outStarted is set once the current command printed its first line.
+	outStarted bool
 
 	suggestions []cli.Command
 	selected    int
@@ -86,20 +91,82 @@ func newModel() *model {
 
 func (m *model) Init() tea.Cmd {
 	// Start on a clean screen, like a separate app.
-	return tea.Sequence(tea.ClearScreen, tea.Println(banner()), textinput.Blink)
+	// The banner is printed on the first WindowSizeMsg, once the width is known.
+	return textinput.Blink
 }
 
-func banner() string {
-	title := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("liki")
-	info := "local wiki for links"
+// logo spells "liki" in half-block letters, two rows high.
+var logo = [2]string{
+	"█  ▀ █▄▀ ▀",
+	"█▄ █ █ █ █",
+}
+
+// banner renders the logo with a tagline and stats about the saved links
+// next to it; on screens too narrow for that, only the text.
+func banner(width int) string {
+	stats := "local wiki for your links"
 	if s, err := openStore(); err == nil {
-		if links, err := s.List(); err == nil {
-			info = fmt.Sprintf("%d links saved", len(links))
+		if st, err := s.Stats(); err == nil {
+			stats = statsLine(st)
 		}
 		s.Close()
 	}
-	help := dim.Render("type to search · / for commands · ↑↓ history · ctrl+c to exit")
-	return boxStyle.Render(title+" "+dim.Render(info)+"\n"+help) + "\n"
+	tagline := theme.Strong.Render("your local link wiki")
+	text := lipgloss.JoinVertical(lipgloss.Left, tagline, dim.Render(stats))
+	// Indented to line up with the text in the input box, with room above.
+	pad := lipgloss.NewStyle().Padding(1, 0, 0, 2)
+	if width < 2+lipgloss.Width(logo[0])+3+lipgloss.Width(text) {
+		return pad.Render(text)
+	}
+	return pad.Render(lipgloss.JoinHorizontal(lipgloss.Top, gradient(logo[0])+"\n"+gradient(logo[1]), "   ", text))
+}
+
+// gradient colors s from pale to deep blue, left to right.
+func gradient(s string) string {
+	from, _ := colorful.Hex(string(theme.PaleBlue))
+	to, _ := colorful.Hex(string(theme.Blue))
+	r := []rune(s)
+	var b strings.Builder
+	for i, c := range r {
+		t := float64(i) / float64(max(1, len(r)-1))
+		col := lipgloss.Color(from.BlendLab(to, t).Hex())
+		b.WriteString(lipgloss.NewStyle().Foreground(col).Render(string(c)))
+	}
+	return b.String()
+}
+
+func statsLine(st store.Stats) string {
+	parts := []string{plural(st.Links, "link")}
+	if st.Tags > 0 {
+		parts = append(parts, plural(st.Tags, "tag"))
+	}
+	if !st.LastAdded.IsZero() {
+		parts = append(parts, "last added "+ago(time.Since(st.LastAdded)))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// ago describes a duration in the past, roughly.
+func ago(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 60*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return fmt.Sprintf("%dmo ago", int(d.Hours()/24/30))
+	}
 }
 
 func openStore() (*store.Store, error) {
@@ -115,10 +182,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.input.Width = max(10, msg.Width-8)
+		if !m.started {
+			// Start on a clean screen, like a separate app.
+			m.started = true
+			return m, tea.Sequence(tea.ClearScreen, tea.Println(banner(m.width)))
+		}
 		return m, nil
 
 	case outputMsg:
-		return m, tea.Sequence(tea.Println(msg.line), msg.next)
+		return m, tea.Sequence(tea.Println(m.outLine(msg.line)), msg.next)
 
 	case doneMsg:
 		m.running, m.cancel = "", nil
@@ -127,9 +199,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case errors.Is(msg.err, context.Canceled):
 			// Cancelling also drops what was queued behind the command.
 			m.queue = nil
-			report = tea.Println(dim.Render("cancelled"))
+			report = m.block(dim.Render("cancelled"))
 		case msg.err != nil:
-			report = tea.Println(errStyle.Render("error: " + msg.err.Error()))
+			report = m.block(errStyle.Render("error: " + msg.err.Error()))
 		}
 		if len(m.queue) > 0 {
 			next := m.queue[0]
@@ -229,30 +301,60 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 
 // execute runs one input line: a /command, or a search for plain text.
 func (m *model) execute(line string) tea.Cmd {
-	echo := tea.Println(echoStyle.Render("> " + line))
+	switch line {
+	case "/exit", "/quit", "/q":
+		return tea.Quit
+	case "/clear":
+		return tea.Sequence(tea.ClearScreen, tea.Println(banner(m.width)))
+	}
+
+	// Like a message in Claude Code: a blank line, then the input itself.
+	m.outStarted = false
+	echo := tea.Sequence(tea.Println(""), tea.Println(theme.Accent.Render(">")+" "+line))
 
 	if !strings.HasPrefix(line, "/") {
 		return tea.Sequence(echo, m.start(line, append([]string{"search"}, strings.Fields(line)...)))
 	}
 	args, err := splitArgs(line[1:])
 	if err != nil {
-		return tea.Sequence(echo, tea.Println(errStyle.Render("error: "+err.Error())))
+		return tea.Sequence(echo, m.block(errStyle.Render("error: "+err.Error())))
 	}
 	if len(args) == 0 {
 		return echo
 	}
 	switch args[0] {
-	case "exit", "quit", "q":
-		return tea.Quit
-	case "clear":
-		return tea.ClearScreen
 	case "help", "?":
-		return tea.Sequence(echo, tea.Println(helpText()))
+		return tea.Sequence(echo, m.block(helpText()))
 	}
 	if !known(args[0]) {
-		return tea.Sequence(echo, tea.Println(errStyle.Render(fmt.Sprintf("unknown command /%s - type /help", args[0]))))
+		return tea.Sequence(echo, m.block(errStyle.Render(fmt.Sprintf("unknown command /%s - type /help", args[0]))))
 	}
 	return tea.Sequence(echo, m.start(line, args))
+}
+
+// Command output is shown as a block under the input, the first line marked
+// with "⎿", like tool results in Claude Code.
+const outIndent = 5
+
+// outLine prefixes one line of command output for the block.
+func (m *model) outLine(s string) string {
+	if s == "" {
+		return ""
+	}
+	if !m.outStarted {
+		m.outStarted = true
+		return dim.Render("  ⎿  ") + s
+	}
+	return strings.Repeat(" ", outIndent) + s
+}
+
+// block prints text as command output.
+func (m *model) block(text string) tea.Cmd {
+	var cmds []tea.Cmd
+	for _, l := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		cmds = append(cmds, tea.Println(m.outLine(l)))
+	}
+	return tea.Sequence(cmds...)
 }
 
 func known(name string) bool {
@@ -273,11 +375,11 @@ func helpText() string {
 	var b strings.Builder
 	b.WriteString("Type any text to search your links. Commands:\n\n")
 	for _, c := range slices.Concat(cli.Commands, builtins) {
-		b.WriteString("  " + nameStyle.Render("/"+c.Name))
+		b.WriteString(nameStyle.Render("/" + c.Name))
 		if c.Args != "" {
 			b.WriteString(" " + dim.Render(c.Args))
 		}
-		b.WriteString("\n      " + c.Summary + "\n")
+		b.WriteString("\n  " + c.Summary + "\n")
 	}
 	b.WriteString("\n" + dim.Render("tab completes · ↑↓ history · esc clears · ctrl+c cancels a running command or exits"))
 	return b.String()
@@ -291,13 +393,16 @@ func (m *model) View() string {
 			b.WriteString(dim.Render("  queued: "+q) + "\n")
 		}
 	}
-	b.WriteString(boxStyle.Width(max(20, m.width-2)).Render(m.input.View()) + "\n")
+	b.WriteString("\n" + boxStyle.Width(max(20, m.width-2)).Render(m.input.View()) + "\n")
+	if len(m.suggestions) == 0 {
+		b.WriteString(dim.Render("  / for commands · ↑↓ history · esc to clear · ctrl+c to exit") + "\n")
+	}
 	for i, c := range m.suggestions {
-		name := fmt.Sprintf("%-8s", "/"+c.Name)
+		name := fmt.Sprintf("  %-9s", "/"+c.Name)
 		if i == m.selected {
-			b.WriteString(selStyle.Render("› "+name) + " " + c.Summary + "\n")
+			b.WriteString(selStyle.Render(name) + " " + c.Summary + "\n")
 		} else {
-			b.WriteString(dim.Render("  "+name+" "+c.Summary) + "\n")
+			b.WriteString(dim.Render(name+" "+c.Summary) + "\n")
 		}
 	}
 	return b.String()

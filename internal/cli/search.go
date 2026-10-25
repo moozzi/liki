@@ -47,14 +47,7 @@ func runSearch(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintln(out, "no matching links")
 		return nil
 	}
-	for _, r := range results {
-		printLink(out, r.Link)
-		how := fmt.Sprintf("meaning %.2f", r.Similarity)
-		if r.Words > 0 {
-			how += fmt.Sprintf(" · words %d/%d", r.Words, r.TotalWords)
-		}
-		fmt.Fprintf(out, "     (%s) %s\n\n", how, snippet(r.Snippet, 150))
-	}
+	printResults(out, results)
 	return nil
 }
 
@@ -132,13 +125,4 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 		pos = append(pos, fs.Arg(0))
 		args = fs.Args()[1:]
 	}
-}
-
-// snippet returns text on one line, shortened to about max characters.
-func snippet(text string, max int) string {
-	s := strings.Join(strings.Fields(text), " ")
-	if r := []rune(s); len(r) > max {
-		s = string(r[:max]) + "…"
-	}
-	return s
 }
