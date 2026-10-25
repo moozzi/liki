@@ -176,6 +176,20 @@ func (s *Store) List() ([]Link, error) {
 	return s.query("")
 }
 
+// FindByTags returns links tagged with any of tags (case-insensitive).
+// With no tags it returns all links.
+func (s *Store) FindByTags(tags []string) ([]Link, error) {
+	if len(tags) == 0 {
+		return s.List()
+	}
+	args := make([]any, len(tags))
+	for i, t := range tags {
+		args[i] = strings.ToLower(t)
+	}
+	placeholders := "?" + strings.Repeat(", ?", len(tags)-1)
+	return s.query(`WHERE l.id IN (SELECT link_id FROM link_tags WHERE lower(tag) IN (`+placeholders+`))`, args...)
+}
+
 // query selects links with their tags; where is an optional WHERE clause on alias l.
 func (s *Store) query(where string, args ...any) ([]Link, error) {
 	rows, err := s.db.Query(`

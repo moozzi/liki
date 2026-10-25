@@ -17,7 +17,8 @@ const usage = `liki - local wiki for links
 
 Usage:
   liki add <url> [-title "..."] [-tags a,b]   save a link
-  liki list                                  show saved links
+  liki list [-tags a,b]                      show saved links; -tags keeps links
+                                             with any of the given tags
   liki edit <id> [-url ...] [-title ...] [-tags a,b]
                                              change a link (only given fields;
                                              -tags replaces all tags)
@@ -36,7 +37,7 @@ func Run(args []string, out io.Writer) error {
 	case "add":
 		return runAdd(args[1:], out)
 	case "list", "ls":
-		return runList(out)
+		return runList(args[1:], out)
 	case "edit":
 		return runEdit(args[1:], out)
 	case "rm", "remove", "delete":
@@ -87,18 +88,32 @@ func runAdd(args []string, out io.Writer) error {
 	return nil
 }
 
-func runList(out io.Writer) error {
+func runList(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	tags := fs.String("tags", "", "comma-separated tags; shows links with any of them")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("list: unexpected argument %q", fs.Arg(0))
+	}
+	filter := splitTags(*tags)
+
 	s, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer s.Close()
-	links, err := s.List()
+	links, err := s.FindByTags(filter)
 	if err != nil {
 		return err
 	}
 	if len(links) == 0 {
-		fmt.Fprintln(out, "no links yet - add one with 'liki add <url>'")
+		if len(filter) > 0 {
+			fmt.Fprintln(out, "no links match the given tags")
+		} else {
+			fmt.Fprintln(out, "no links yet - add one with 'liki add <url>'")
+		}
 		return nil
 	}
 	for _, l := range links {
