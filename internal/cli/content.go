@@ -113,6 +113,7 @@ func runFetch(args []string, out io.Writer) error {
 	if ctx.Err() != nil {
 		return errors.New("fetch: interrupted")
 	}
+	indexAfterChange(s, out)
 	if failed > 0 {
 		return fmt.Errorf("fetch: %d of %d links failed", failed, len(links))
 	}

@@ -60,6 +60,14 @@ CREATE TABLE IF NOT EXISTS snapshots (
 	link_id INTEGER PRIMARY KEY REFERENCES links(id) ON DELETE CASCADE,
 	html_gz BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS chunks (
+	id      INTEGER PRIMARY KEY,
+	link_id INTEGER NOT NULL REFERENCES links(id) ON DELETE CASCADE,
+	model   TEXT NOT NULL,
+	text    TEXT NOT NULL,
+	vec     BLOB NOT NULL -- little-endian float32, unit length
+);
+CREATE INDEX IF NOT EXISTS chunks_link ON chunks(link_id);
 `
 
 // DefaultPath returns $LIKI_DB or ~/.liki/liki.db.
@@ -165,6 +173,10 @@ func (s *Store) Update(id int64, p Patch) (Link, error) {
 	if n == 0 {
 		return Link{}, ErrNotFound
 	}
+	// The search index embeds title, URL and tags, so any change makes it stale.
+	if _, err := tx.Exec(`DELETE FROM chunks WHERE link_id = ?`, id); err != nil {
+		return Link{}, err
+	}
 	// Content saved for the old URL no longer matches the link.
 	if p.URL != nil {
 		for _, q := range []string{`DELETE FROM contents WHERE link_id = ?`, `DELETE FROM snapshots WHERE link_id = ?`} {
@@ -238,6 +250,10 @@ func (s *Store) SaveContent(id int64, title, text, html string, snapshot []byte)
 		return err
 	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO snapshots (link_id, html_gz) VALUES (?, ?)`, id, gz.Bytes()); err != nil {
+		return err
+	}
+	// New content needs a new search index.
+	if _, err := tx.Exec(`DELETE FROM chunks WHERE link_id = ?`, id); err != nil {
 		return err
 	}
 	return tx.Commit()

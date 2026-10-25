@@ -30,9 +30,15 @@ Usage:
   liki show <id> [-html]                     read saved article text
   liki open <id> [-o file.html]              open the saved page, with its original
                                              styles, in the browser (offline)
+  liki search <words...> [-n 10]             find links by meaning: title, tags,
+                                             URL and article text
+  liki index [-all]                          build the search index for links
+                                             missing it (-all: rebuild everything)
   liki help                                  show this help
 
 Database: ~/.liki/liki.db (override with LIKI_DB)
+Search uses a local Ollama server (OLLAMA_HOST, default localhost:11434)
+with the embedding model from LIKI_EMBED_MODEL (default bge-m3).
 `
 
 func Run(args []string, out io.Writer) error {
@@ -55,6 +61,10 @@ func Run(args []string, out io.Writer) error {
 		return runShow(args[1:], out)
 	case "open":
 		return runOpen(args[1:], out)
+	case "search", "find", "s":
+		return runSearch(args[1:], out)
+	case "index":
+		return runIndex(args[1:], out)
 	case "help", "-h", "--help":
 		fmt.Fprint(out, usage)
 		return nil
@@ -99,13 +109,13 @@ func runAdd(args []string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "added #%d %s\n", l.ID, l.URL)
-	if *noFetch {
-		return nil
+	if !*noFetch {
+		// The link is already saved, so a failed download is only a warning.
+		if err := fetchOne(s, l, out); err != nil {
+			fmt.Fprintf(out, "warning: could not fetch content: %v (retry with 'liki fetch %d')\n", err, l.ID)
+		}
 	}
-	// The link is already saved, so a failed download is only a warning.
-	if err := fetchOne(s, l, out); err != nil {
-		fmt.Fprintf(out, "warning: could not fetch content: %v (retry with 'liki fetch %d')\n", err, l.ID)
-	}
+	indexAfterChange(s, out)
 	return nil
 }
 
@@ -196,6 +206,7 @@ func runEdit(args []string, out io.Writer) error {
 	}
 	fmt.Fprintln(out, "updated:")
 	printLink(out, l)
+	indexAfterChange(s, out)
 	return nil
 }
 
