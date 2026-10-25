@@ -59,6 +59,20 @@ func TestAddRefusesDuplicates(t *testing.T) {
 	wantErr(t, "invalid url", "add", "go.dev/blog/maps")
 }
 
+func TestFlagsAroundArgument(t *testing.T) {
+	setup(t)
+	// Flags before the URL used to stop flag parsing at it, dropping -tags.
+	mustRun(t, "add", "-no-fetch", "https://a.example", "-tags", "go,maps")
+	if out := mustRun(t, "list"); !strings.Contains(out, "go, maps") {
+		t.Errorf("tags after the URL were dropped:\n%s", out)
+	}
+	if out := mustRun(t, "edit", "-url", "https://b.example", "1", "-tags", "x"); !strings.Contains(out, "https://b.example") || !strings.Contains(out, "[x]") {
+		t.Errorf("edit with flags on both sides of the id:\n%s", out)
+	}
+	wantErr(t, `unexpected argument "https://c.example"`, "add", "https://b.example", "https://c.example")
+	wantErr(t, "flag provided but not defined: -x", "related", "-n", "3", "1", "-x")
+}
+
 func TestEdit(t *testing.T) {
 	setup(t)
 	mustRun(t, "add", "https://a.example", "-tags", "x,y", "-no-fetch")

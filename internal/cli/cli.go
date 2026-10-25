@@ -301,20 +301,19 @@ func printLink(out io.Writer, l store.Link) {
 	}
 }
 
-// parseWithArg parses fs and returns the single positional argument,
-// which may come before or after the flags.
+// parseWithArg parses fs and returns its single, optional positional
+// argument, which may come before, after or between the flags.
 func parseWithArg(fs *flag.FlagSet, args []string) (string, error) {
-	var arg string
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		arg, args = args[0], args[1:]
-	}
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseInterspersed(fs, args)
+	switch {
+	case err != nil:
 		return "", err
+	case len(pos) > 1:
+		return "", fmt.Errorf("%s: unexpected argument %q", fs.Name(), pos[1])
+	case len(pos) == 1:
+		return pos[0], nil
 	}
-	if arg == "" && fs.NArg() > 0 {
-		arg = fs.Arg(0)
-	}
-	return arg, nil
+	return "", nil
 }
 
 func parseURL(raw string) (string, error) {
