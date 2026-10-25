@@ -62,6 +62,7 @@ $ liki
 |---|---|
 | `add <url> [-tags a,b] [-no-fetch] [-force]` | Save a link. Downloads the article text and an offline snapshot right away unless `-no-fetch` is given. Refuses a link that is already saved, even in another form (`http`/`https`, `www.`, trailing `/`, `#anchor`, `utm_*` and other tracking parameters); `-force` saves it anyway. |
 | `search <words...> [-n 10]` | Find links by meaning and keywords in their tags, URL and article text. In interactive mode, just type the words. |
+| `related <id> [-n 10]` | Find links on similar topics, by comparing whole articles by meaning. Uses the stored index, so it is instant. |
 | `list [page] [-n 20] [-tags a,b]` | Show saved links, newest first, one page at a time. `-tags` keeps links with any of the tags. |
 | `show <id> [-html]` | Print the saved article text (or its cleaned-up HTML). |
 | `open <id> [-o file.html]` | Open the saved page, with its original styles and images, in the browser. Works offline. `-o` saves it to a file instead. |
@@ -83,6 +84,7 @@ liki add https://go.dev/blog/maps -tags go
 liki search enum postgres
 liki search "how do maps work in go"
 liki search typ wyliczeniowy w bazie danych   # Polish query, English articles
+liki related 3               # more links on the topic of #3
 
 # Browse
 liki list                    # newest 20 links
@@ -112,6 +114,8 @@ A search ranks links both ways and merges the two rankings (reciprocal rank fusi
 - **words**: how many of the query words the link contains. A link needs at least half of them to count as a keyword match.
 
 Searching compares stored vectors only; article text is never re-read at search time.
+
+`related` averages the vectors of each link's pieces into one vector per link and compares those. Whole articles score higher than a short query does, so links below 0.6 are hidden there.
 
 ## Configuration
 

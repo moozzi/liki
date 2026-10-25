@@ -34,6 +34,7 @@ Usage:
                                              styles, in the browser (offline)
   liki search <words...> [-n 10]             find links by meaning and keywords in
                                              tags, URL and article text
+  liki related <id> [-n 10]                  find links on similar topics
   liki index [-all]                          build the search index for links
                                              missing it (-all: rebuild everything)
   liki help                                  show this help
@@ -54,6 +55,7 @@ var Commands = []Command{
 	{"search", "<words...> [-n 10]", "find links by meaning and keywords"},
 	{"add", "<url> [-tags a,b] [-no-fetch] [-force]", "save a link and download its content"},
 	{"list", "[page] [-n 20] [-tags a,b]", "show saved links, newest first, a page at a time"},
+	{"related", "<id> [-n 10]", "find links on similar topics"},
 	{"show", "<id> [-html]", "read saved article text"},
 	{"open", "<id> [-o file.html]", "open the saved page, with original styles, in the browser"},
 	{"edit", "<id> [-url ...] [-tags a,b]", "change a link (-tags replaces all tags)"},
@@ -95,6 +97,8 @@ func dispatch(ctx context.Context, args []string, out io.Writer) error {
 		return runOpen(ctx, args[1:], out)
 	case "search", "find", "s":
 		return runSearch(ctx, args[1:], out)
+	case "related", "similar":
+		return runRelated(ctx, args[1:], out)
 	case "index":
 		return runIndex(ctx, args[1:], out)
 	case "help", "-h", "--help":

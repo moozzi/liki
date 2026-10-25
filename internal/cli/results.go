@@ -15,11 +15,16 @@ import (
 	"liki/internal/theme"
 )
 
-const (
-	barCells = 10
-	// Similarities between these bounds fill the bar from empty to full;
-	// bge-m3 rarely scores unrelated text above barLow.
-	barLow, barHigh = 0.3, 0.8
+const barCells = 10
+
+// barScale maps similarities between low and high to an empty to full bar.
+type barScale struct{ low, high float64 }
+
+var (
+	// bge-m3 rarely scores a query and unrelated text above 0.3.
+	searchScale = barScale{0.3, 0.8}
+	// Whole articles score higher: unrelated ones are around 0.55.
+	relatedScale = barScale{0.5, 0.9}
 )
 
 // printResults prints one line per link: its id, URL (host highlighted) and
@@ -39,7 +44,24 @@ func printResults(out io.Writer, results []search.Result) {
 	links := make([]store.Link, len(results))
 	scores := make([]string, len(results))
 	for i, r := range results {
-		links[i], scores[i] = r.Link, scoreColumn(r, wordsWidth)
+		links[i], scores[i] = r.Link, scoreColumn(r, searchScale, wordsWidth)
+	}
+	printRows(out, links, scores)
+}
+
+// printRelated prints links related to l like search results, with only
+// the meaning column.
+func printRelated(out io.Writer, l store.Link, results []search.Result) {
+	noun := "links"
+	if len(results) == 1 {
+		noun = "link"
+	}
+	fmt.Fprintf(out, "%s %s %s %s\n", theme.Strong.Render(fmt.Sprint(len(results))),
+		theme.Dim.Render(noun+" related to"), theme.Accent.Render(fmt.Sprintf("#%d", l.ID)), styleURL(displayURL(l.URL)))
+	links := make([]store.Link, len(results))
+	scores := make([]string, len(results))
+	for i, r := range results {
+		links[i], scores[i] = r.Link, scoreColumn(r, relatedScale, 0)
 	}
 	printRows(out, links, scores)
 }
@@ -117,16 +139,16 @@ func commandHint(out io.Writer, cmd string) string {
 }
 
 // scoreColumn renders "meaning ━━━━━━──── 0.67   words 2/2" with fixed widths,
-// so columns line up; the words part is padded to wordsWidth.
-func scoreColumn(r search.Result, wordsWidth int) string {
-	fill := (float64(r.Similarity) - barLow) / (barHigh - barLow)
-	cells := int(math.Round(math.Max(0, math.Min(1, fill)) * barCells))
+// so columns line up; the words part is padded to wordsWidth (0 leaves it out).
+func scoreColumn(r search.Result, scale barScale, wordsWidth int) string {
+	fill := math.Max(0, math.Min(1, (float64(r.Similarity)-scale.low)/(scale.high-scale.low)))
+	cells := int(math.Round(fill * barCells))
 
 	valueStyle := theme.Dim
 	switch {
-	case r.Similarity >= 0.6:
+	case fill >= 0.6:
 		valueStyle = theme.Strong
-	case r.Similarity >= 0.5:
+	case fill >= 0.4:
 		valueStyle = theme.Accent
 	}
 	s := theme.Dim.Render("meaning ") +

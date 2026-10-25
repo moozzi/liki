@@ -51,6 +51,51 @@ func runSearch(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
+func runRelated(ctx context.Context, args []string, out io.Writer) error {
+	fs := newFlagSet("related", out)
+	n := fs.Int("n", 10, "maximum number of links")
+	rawID, err := parseWithArg(fs, args)
+	if err != nil {
+		return err
+	}
+	if rawID == "" {
+		return errors.New("related: missing id")
+	}
+	id, err := parseID(rawID)
+	if err != nil {
+		return fmt.Errorf("related: %w", err)
+	}
+
+	s, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	l, err := s.Get(id)
+	if err != nil {
+		return fmt.Errorf("related #%d: %w", id, err)
+	}
+	c := embed.New()
+	// Stored vectors are enough, so Ollama is needed only for unindexed links.
+	if _, err := indexPending(ctx, s, c, out); err != nil {
+		fmt.Fprintf(out, "warning: search index not updated: %v\n", err)
+	}
+
+	results, err := search.Related(s, c.Model, id, *n)
+	if errors.Is(err, search.ErrNotIndexed) {
+		return fmt.Errorf("related #%d: %w (run '%s' with Ollama running)", id, err, commandHint(out, "index"))
+	}
+	if err != nil {
+		return err
+	}
+	if len(results) == 0 {
+		fmt.Fprintf(out, "no links related to #%d\n", id)
+		return nil
+	}
+	printRelated(out, l, results)
+	return nil
+}
+
 func runIndex(ctx context.Context, args []string, out io.Writer) error {
 	fs := newFlagSet("index", out)
 	all := fs.Bool("all", false, "rebuild the index of every link")

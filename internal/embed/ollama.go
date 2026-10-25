@@ -96,12 +96,13 @@ func (c *Client) embedBatch(ctx context.Context, texts []string) ([][]float32, e
 		return nil, fmt.Errorf("ollama: got %d embeddings for %d texts", len(res.Embeddings), len(texts))
 	}
 	for _, v := range res.Embeddings {
-		normalize(v)
+		Normalize(v)
 	}
 	return res.Embeddings, nil
 }
 
-func normalize(v []float32) {
+// Normalize scales v to unit length, so that Dot gives cosine similarity.
+func Normalize(v []float32) {
 	var sum float64
 	for _, x := range v {
 		sum += float64(x) * float64(x)

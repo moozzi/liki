@@ -99,6 +99,11 @@ const (
 // With bge-m3, unrelated texts usually score below 0.45.
 const minSimilarity = 0.45
 
+// minRelated hides links that are not really related. Whole-article centroids
+// score higher than chunks against a short query: with bge-m3, articles on
+// unrelated topics are around 0.55.
+const minRelated = 0.6
+
 type Result struct {
 	Link       store.Link
 	Score      float64 // reciprocal rank fusion score, used for ordering
@@ -240,4 +245,54 @@ func orQuery(words []string) string {
 // quote makes w an FTS5 string, so characters like '-' or '*' are not query syntax.
 func quote(w string) string {
 	return `"` + strings.ReplaceAll(w, `"`, `""`) + `"`
+}
+
+// ErrNotIndexed is returned by Related for a link without a search index.
+var ErrNotIndexed = errors.New("link is not indexed yet")
+
+// Related returns up to n links most similar in meaning to the link with the
+// given id, best first. Each link is represented by the mean of its chunk
+// vectors, so whole articles are compared rather than single passages.
+func Related(s *store.Store, model string, id int64, n int) ([]Result, error) {
+	chunks, err := s.Chunks(model)
+	if err != nil {
+		return nil, err
+	}
+	centroids := map[int64][]float32{}
+	for _, ch := range chunks {
+		c := centroids[ch.LinkID]
+		if c == nil {
+			c = make([]float32, len(ch.Vec))
+			centroids[ch.LinkID] = c
+		}
+		for i, x := range ch.Vec {
+			c[i] += x
+		}
+	}
+	target := centroids[id]
+	if target == nil {
+		return nil, ErrNotIndexed
+	}
+	// Normalized, the dot product of two centroids is their cosine similarity.
+	for _, c := range centroids {
+		embed.Normalize(c)
+	}
+
+	var results []Result
+	for linkID, c := range centroids {
+		if linkID == id {
+			continue
+		}
+		if sim := embed.Dot(target, c); sim >= minRelated {
+			results = append(results, Result{Link: store.Link{ID: linkID}, Similarity: sim})
+		}
+	}
+	slices.SortFunc(results, func(a, b Result) int { return cmp.Compare(b.Similarity, a.Similarity) })
+	results = results[:min(n, len(results))]
+	for i := range results {
+		if results[i].Link, err = s.Get(results[i].Link.ID); err != nil {
+			return nil, err
+		}
+	}
+	return results, nil
 }
