@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"liki/internal/cli"
 )
@@ -170,5 +171,53 @@ func TestLineWriter(t *testing.T) {
 	}
 	if want := []string{"first", "second", "third"}; !slices.Equal(got, want) {
 		t.Errorf("lines = %q, want %q", got, want)
+	}
+}
+
+func TestLayout(t *testing.T) {
+	row := "     #3   go.dev/blog/maps" + cli.ColumnSep + "2026-10-25"
+	for _, width := range []int{80, 40} {
+		got := layout(row, width)
+		// The right column ends where the text in the input box ends.
+		if w := ansi.StringWidth(got); w != width-2 {
+			t.Errorf("width %d: row is %d wide, want %d: %q", width, w, width-2, got)
+		}
+		if !strings.HasSuffix(got, "   2026-10-25") || !strings.HasPrefix(got, "     #3   go.dev") {
+			t.Errorf("width %d: %q", width, got)
+		}
+	}
+	if got := layout(row, 30); !strings.Contains(got, "…") || !strings.HasSuffix(got, "2026-10-25") {
+		t.Errorf("narrow: %q, want the URL shortened and the date kept", got)
+	}
+	if got := layout("plain text", 20); got != "plain text" {
+		t.Errorf("plain line changed: %q", got)
+	}
+}
+
+func TestRelayoutDuringResize(t *testing.T) {
+	m := testModel(t)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.println("     #1   a.example" + cli.ColumnSep + "right")
+
+	// The first change is laid out at once.
+	if _, cmd := m.Update(tea.WindowSizeMsg{Width: 70, Height: 30}); cmd == nil || m.laidOut != 70 {
+		t.Fatalf("first resize: laidOut = %d, cmd %v; want an immediate relayout", m.laidOut, cmd)
+	}
+	// More changes right after it wait for relayoutMsg.
+	for _, w := range []int{65, 60} {
+		if _, cmd := m.Update(tea.WindowSizeMsg{Width: w, Height: 30}); cmd != nil {
+			t.Errorf("resize to %d right after a relayout was not throttled", w)
+		}
+	}
+	if _, cmd := m.Update(relayoutMsg{}); cmd == nil || m.laidOut != 60 {
+		t.Errorf("after the throttle: laidOut = %d, want the final width 60", m.laidOut)
+	}
+	// Nothing changed since: the next tick does nothing.
+	if _, cmd := m.Update(relayoutMsg{}); cmd != nil {
+		t.Error("relayout without a width change")
+	}
+	// Only the height changed: nothing to lay out.
+	if _, cmd := m.Update(tea.WindowSizeMsg{Width: 60, Height: 50}); cmd != nil {
+		t.Error("relayout for a height change")
 	}
 }

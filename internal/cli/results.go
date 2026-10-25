@@ -105,10 +105,24 @@ func printLinks(out io.Writer, links []store.Link, p listPage) {
 	}
 }
 
+// ColumnSep marks where the right column of a row starts, in output for
+// readers that align rows themselves (see columnar).
+const ColumnSep = "\x1f"
+
+// columnar is implemented by outputs that align rows themselves, like the
+// interactive mode, which aligns them again when the terminal is resized.
+type columnar interface{ Columns() bool }
+
 // printRows prints one line per link: its id, URL (host highlighted) and a
 // right column, aligned to the right edge of the terminal, or right after
 // the longest URL when the width is unknown.
 func printRows(out io.Writer, links []store.Link, right []string) {
+	if c, ok := out.(columnar); ok && c.Columns() {
+		for i, l := range links {
+			fmt.Fprintf(out, "%s %s%s%s\n", theme.Accent.Render(fmt.Sprintf("#%-3d", l.ID)), styleURL(displayURL(l.URL)), ColumnSep, right[i])
+		}
+		return
+	}
 	rightWidth, urlWidth := 0, 0
 	for i, l := range links {
 		rightWidth = max(rightWidth, lipgloss.Width(right[i]))
@@ -189,15 +203,8 @@ func styleURL(u string) string {
 	return lipgloss.NewStyle().Foreground(theme.PaleBlue).Bold(true).Render(host) + theme.Dim.Render(rest)
 }
 
-// widther is implemented by outputs that know their width in columns,
-// like the interactive mode.
-type widther interface{ Width() int }
-
 // outputWidth returns how many columns out can show, or 0 if unknown.
 func outputWidth(out io.Writer) int {
-	if w, ok := out.(widther); ok {
-		return w.Width()
-	}
 	if f, ok := out.(*os.File); ok {
 		if w, _, err := term.GetSize(f.Fd()); err == nil {
 			// Writing up to the last column makes some terminals wrap.

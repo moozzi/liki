@@ -29,7 +29,7 @@ func (m *model) start(label string, args []string) tea.Cmd {
 
 	lines := make(chan string)
 	done := make(chan error, 1)
-	w := &lineWriter{lines: lines, width: m.width - outIndent - 2}
+	w := &lineWriter{lines: lines}
 	go func() {
 		err := cli.Run(ctx, args, w)
 		w.flush()
@@ -57,7 +57,6 @@ type lineWriter struct {
 	mu    sync.Mutex
 	buf   bytes.Buffer
 	lines chan<- string
-	width int
 }
 
 func (w *lineWriter) Write(p []byte) (int, error) {
@@ -74,9 +73,9 @@ func (w *lineWriter) Write(p []byte) (int, error) {
 	}
 }
 
-// Width lets commands lay out output for the space left of the output
-// block indent, ending where the text in the input box ends.
-func (w *lineWriter) Width() int { return w.width }
+// Columns makes commands mark right columns instead of aligning them, so
+// rows are aligned for the current width, and again after a resize.
+func (w *lineWriter) Columns() bool { return true }
 
 // Interactive tells commands to suggest /commands in their hints.
 func (w *lineWriter) Interactive() bool { return true }

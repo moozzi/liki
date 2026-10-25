@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/lucasb-eyer/go-colorful"
 
 	"liki/internal/cli"
@@ -64,6 +65,16 @@ type model struct {
 	suggestions []cli.Command
 	selected    int
 
+	// printed is everything printed above the prompt, kept to print it
+	// again for a new width when the terminal is resized.
+	printed []printed
+	// laidOut is the width printed was last laid out for.
+	laidOut int
+	// relayoutSoon is set after a relayout, until relayoutMsg allows the next.
+	relayoutSoon bool
+	// stats describes the saved links in the banner.
+	stats string
+
 	history     []string
 	historyPos  int // len(history) means the line being typed
 	draft       string
@@ -103,14 +114,7 @@ var logo = [2]string{
 
 // banner renders the logo with a tagline and stats about the saved links
 // next to it; on screens too narrow for that, only the text.
-func banner(width int) string {
-	stats := "local wiki for your links"
-	if s, err := openStore(); err == nil {
-		if st, err := s.Stats(); err == nil {
-			stats = statsLine(st)
-		}
-		s.Close()
-	}
+func banner(width int, stats string) string {
 	tagline := theme.Strong.Render("your local link wiki")
 	text := lipgloss.JoinVertical(lipgloss.Left, tagline, dim.Render(stats))
 	// Indented to line up with the text in the input box, with room above.
@@ -133,6 +137,20 @@ func gradient(s string) string {
 		b.WriteString(lipgloss.NewStyle().Foreground(col).Render(string(c)))
 	}
 	return b.String()
+}
+
+// loadStats describes the saved links for the banner.
+func loadStats() string {
+	s, err := openStore()
+	if err != nil {
+		return "local wiki for your links"
+	}
+	defer s.Close()
+	st, err := s.Stats()
+	if err != nil {
+		return "local wiki for your links"
+	}
+	return statsLine(st)
 }
 
 func statsLine(st store.Stats) string {
@@ -184,13 +202,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Width = max(10, msg.Width-8)
 		if !m.started {
 			// Start on a clean screen, like a separate app.
-			m.started = true
-			return m, tea.Sequence(tea.ClearScreen, tea.Println(banner(m.width)))
+			m.started, m.laidOut = true, m.width
+			return m, tea.Sequence(tea.ClearScreen, m.printBanner())
 		}
-		return m, nil
+		return m, m.relayout()
+
+	case relayoutMsg:
+		m.relayoutSoon = false
+		return m, m.relayout()
 
 	case outputMsg:
-		return m, tea.Sequence(tea.Println(m.outLine(msg.line)), msg.next)
+		return m, tea.Sequence(m.println(m.outLine(msg.line)), msg.next)
 
 	case doneMsg:
 		m.running, m.cancel = "", nil
@@ -307,12 +329,13 @@ func (m *model) execute(line string) tea.Cmd {
 	case "/exit", "/quit", "/q", "exit", "quit":
 		return tea.Quit
 	case "/clear":
-		return tea.Sequence(tea.ClearScreen, tea.Println(banner(m.width)))
+		m.printed = nil
+		return tea.Sequence(tea.ClearScreen, m.printBanner())
 	}
 
 	// Like a message in Claude Code: a blank line, then the input itself.
 	m.outStarted = false
-	echo := tea.Sequence(tea.Println(""), tea.Println(theme.Accent.Render(">")+" "+line))
+	echo := tea.Sequence(m.println(""), m.println(theme.Accent.Render(">")+" "+line))
 
 	if !strings.HasPrefix(line, "/") {
 		return tea.Sequence(echo, m.start(line, append([]string{"search"}, strings.Fields(line)...)))
@@ -354,9 +377,97 @@ func (m *model) outLine(s string) string {
 func (m *model) block(text string) tea.Cmd {
 	var cmds []tea.Cmd
 	for _, l := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
-		cmds = append(cmds, tea.Println(m.outLine(l)))
+		cmds = append(cmds, m.println(m.outLine(l)))
 	}
 	return tea.Sequence(cmds...)
+}
+
+// printed is a piece of output above the prompt.
+type printed struct {
+	text   string
+	banner bool // the banner, drawn for the current width instead of text
+}
+
+// maxPrinted limits how much output is kept for printing again after a resize.
+const maxPrinted = 2000
+
+// relayoutEvery limits how often output is laid out again while the
+// terminal is being resized.
+const relayoutEvery = 50 * time.Millisecond
+
+// relayoutMsg allows the next relayout.
+type relayoutMsg struct{}
+
+// relayout prints the output again if the width changed since it was last
+// laid out: at once, and then at most every relayoutEvery, so dragging the
+// window edge stays smooth and the output ends up laid out for the final width.
+func (m *model) relayout() tea.Cmd {
+	if m.width == m.laidOut || m.relayoutSoon {
+		return nil
+	}
+	m.laidOut, m.relayoutSoon = m.width, true
+	return tea.Batch(m.reprint(), tea.Tick(relayoutEvery, func(time.Time) tea.Msg { return relayoutMsg{} }))
+}
+
+// println prints text above the prompt and remembers it.
+func (m *model) println(text string) tea.Cmd {
+	return m.add(printed{text: text})
+}
+
+func (m *model) printBanner() tea.Cmd {
+	m.stats = loadStats()
+	return m.add(printed{banner: true})
+}
+
+func (m *model) add(p printed) tea.Cmd {
+	m.printed = append(m.printed, p)
+	if len(m.printed) > maxPrinted {
+		m.printed = m.printed[len(m.printed)-maxPrinted:]
+	}
+	return tea.Println(m.render(p))
+}
+
+func (m *model) render(p printed) string {
+	if p.banner {
+		return banner(m.width, m.stats)
+	}
+	lines := strings.Split(p.text, "\n")
+	for i, l := range lines {
+		lines[i] = layout(l, m.width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// clearAll clears the screen and the scrollback and moves the cursor home.
+const clearAll = "\x1b[2J\x1b[3J\x1b[H"
+
+// reprint replaces everything on the terminal with the output laid out for
+// the current width. The terminal rewraps old lines on resize, which leaves
+// the output misaligned and the prompt drawn over remains of its old self.
+func (m *model) reprint() tea.Cmd {
+	var b strings.Builder
+	b.WriteString(clearAll)
+	for i, p := range m.printed {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(m.render(p))
+	}
+	return tea.Println(b.String())
+}
+
+// layout aligns the right column of a row (after cli.ColumnSep) to the right
+// edge, where the text in the input box ends, shortening the left part to
+// make room. Other lines are returned as they are.
+func layout(line string, width int) string {
+	left, right, ok := strings.Cut(line, cli.ColumnSep)
+	if !ok {
+		return line
+	}
+	const gap = 3
+	room := max(10, width-2-gap-ansi.StringWidth(right))
+	left = ansi.Truncate(left, room, "…")
+	return left + strings.Repeat(" ", room-ansi.StringWidth(left)+gap) + right
 }
 
 func known(name string) bool {
