@@ -173,7 +173,7 @@ func runAdd(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
-func runList(ctx context.Context, args []string, out io.Writer) error {
+func runList(_ context.Context, args []string, out io.Writer) error {
 	fs := newFlagSet("list", out)
 	tags := fs.String("tags", "", "comma-separated tags; shows links with any of them")
 	size := fs.Int("n", 20, "links per page")
@@ -333,7 +333,7 @@ func parseID(s string) (int64, error) {
 	return id, nil
 }
 
-func runRemove(ctx context.Context, args []string, out io.Writer) error {
+func runRemove(_ context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("rm: missing id")
 	}

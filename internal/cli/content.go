@@ -143,7 +143,7 @@ func fetchOne(ctx context.Context, s *store.Store, l store.Link, out io.Writer) 
 	return nil
 }
 
-func runOpen(ctx context.Context, args []string, out io.Writer) error {
+func runOpen(_ context.Context, args []string, out io.Writer) error {
 	fs := newFlagSet("open", out)
 	outFile := fs.String("o", "", "write the snapshot to this file instead of opening it")
 	raw, err := parseWithArg(fs, args)
@@ -208,7 +208,7 @@ func openInBrowser(path string) error {
 	return nil
 }
 
-func runShow(ctx context.Context, args []string, out io.Writer) error {
+func runShow(_ context.Context, args []string, out io.Writer) error {
 	fs := newFlagSet("show", out)
 	asHTML := fs.Bool("html", false, "print cleaned-up HTML instead of plain text")
 	raw, err := parseWithArg(fs, args)
