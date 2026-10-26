@@ -490,32 +490,32 @@ func helpText() string {
 	for _, c := range slices.Concat(cli.Commands, builtins) {
 		b.WriteString(nameStyle.Render("/" + c.Name))
 		if c.Args != "" {
-			b.WriteString(" " + dim.Render(c.Args))
+			fmt.Fprintf(&b, " %s", dim.Render(c.Args))
 		}
-		b.WriteString("\n  " + c.Summary + "\n")
+		fmt.Fprintf(&b, "\n  %s\n", c.Summary)
 	}
-	b.WriteString("\n" + dim.Render("tab completes · ↑↓ history · esc clears · ctrl+c cancels a running command or exits"))
+	fmt.Fprintf(&b, "\n%s", dim.Render("tab completes · ↑↓ history · esc clears · ctrl+c cancels a running command or exits"))
 	return b.String()
 }
 
 func (m *model) View() string {
 	var b strings.Builder
 	if m.running != "" {
-		b.WriteString(m.spinner.View() + " " + dim.Render(m.running+" · ctrl+c to cancel") + "\n")
+		fmt.Fprintf(&b, "%s %s\n", m.spinner.View(), dim.Render(m.running+" · ctrl+c to cancel"))
 		for _, q := range m.queue {
-			b.WriteString(dim.Render("  queued: "+q) + "\n")
+			fmt.Fprintf(&b, "%s\n", dim.Render("  queued: "+q))
 		}
 	}
-	b.WriteString("\n" + boxStyle.Width(max(20, m.width-2)).Render(m.input.View()) + "\n")
+	fmt.Fprintf(&b, "\n%s\n", boxStyle.Width(max(20, m.width-2)).Render(m.input.View()))
 	if len(m.suggestions) == 0 {
-		b.WriteString(dim.Render("  / for commands · ↑↓ history · esc to clear · ctrl+c to exit") + "\n")
+		fmt.Fprintf(&b, "%s\n", dim.Render("  / for commands · ↑↓ history · esc to clear · ctrl+c to exit"))
 	}
 	for i, c := range m.suggestions {
 		name := fmt.Sprintf("  %-9s", "/"+c.Name)
 		if i == m.selected {
-			b.WriteString(selStyle.Render(name) + " " + c.Summary + "\n")
+			fmt.Fprintf(&b, "%s %s\n", selStyle.Render(name), c.Summary)
 		} else {
-			b.WriteString(dim.Render(name+" "+c.Summary) + "\n")
+			fmt.Fprintf(&b, "%s\n", dim.Render(name+" "+c.Summary))
 		}
 	}
 	return b.String()
